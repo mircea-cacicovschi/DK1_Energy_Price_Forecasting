@@ -1,0 +1,684 @@
+---
+title: "Test set"
+format: docx
+editor: source
+---
+
+## Pseudo Test: 1-14 Aug 2025
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr); library(ggplot2); library(readr); library(lubridate)
+  library(glmnet); library(randomForest); library(gbm);   library(xgboost)
+  library(e1071);  library(FNN);         library(earth);  library(tidyr)
+})
+```
+
+```{r}
+set.seed(123)
+```
+
+```{r}
+path_hist        <- "merged_energy_weather_data.csv"  # full history ending 2025-07-31
+path_aug_forecast<- "weather_forecasts_aug.csv"       # 14-day DK1 weather forecasts (Aug 1–14)
+path_actual_aug  <- "actual_aug.csv"                  # Aug 1–14 actual price (date, price)
+```
+
+```{r}
+# Tuned hyperparameters
+# Linear (glmnet)
+BEST_LAMBDA_RIDGE <- 7.51
+BEST_LAMBDA_LASSO <- 0.04
+BEST_ALPHA_EN     <- 0.01
+BEST_LAMBDA_EN    <- 0.69
+
+# Bagging (RF with mtry = p)
+BAG_NTREE   <- 1000
+BAG_MTRY    <- 15
+BAG_NODESZ  <- 5
+BAG_MAXN    <- NULL
+
+# Random Forest
+RF_NTREE    <- 300	
+RF_MTRY     <- 10	
+RF_NODESZ   <- 5
+
+# GBM
+GBM_NTREES  <- 1000
+GBM_DEPTH   <- 5
+GBM_SHRINK  <- 0.025
+
+# XGBoost
+XGB_NROUNDS <- 500
+XGB_MAXDEP  <- 4
+XGB_ETA     <- 0.05
+
+# SVR (radial)
+SVR_C       <- 200
+SVR_GAMMA   <- 0.001
+SVR_EPS     <- 0.2
+
+# KNN
+KNN_K       <- 3
+
+# MARS
+MARS_DEGREE <- 2
+MARS_NK     <- 30
+
+# General config
+K_LAGS <- 7
+SEED   <- 123
+```
+
+```{r}
+# Loading data
+# Full historical data
+hist <- read_csv(path_hist, show_col_types = FALSE)
+
+colnames(hist) <- c("date", "price", "temp", "precip", "wind", "humidity", "cloud", "radiation", "week_day", "month", "day_month")
+hist$date <- as.Date(hist$date, format = "%m/%d/%Y")
+hist$week_day <- as.factor(hist$week_day)
+hist$month <- as.factor(hist$month)
+hist <- hist %>% select(-day_month)
+
+hist <- hist %>%
+  arrange(date) %>%
+  mutate(cloud = ifelse(
+    is.na(cloud),
+    (lag(cloud) + lead(cloud)) / 2,
+    cloud
+  ))
+```
+
+```{r}
+# Forecasted weather vars. for 1-14 Aug
+augX <- read_csv(path_aug_forecast, show_col_types = FALSE)
+
+colnames(augX) <- c("date", "temp", "precip", "wind", "humidity", "cloud", "radiation", "week_day", "month")
+augX$date <- as.Date(augX$date, format = "%m/%d/%Y")
+augX$week_day <- as.factor(augX$week_day)
+augX$month <- as.factor(augX$month)
+
+augX <- augX%>%
+  arrange(date)
+augX <- as_tibble(augX)
+```
+
+```{r}
+# Actual prices for 1-14 Aug (dependent var.)
+actual_aug <- read_csv(path_actual_aug, show_col_types = FALSE)
+colnames(actual_aug) <- c("date", "price")
+actual_aug$date <- as.Date(actual_aug$date, format = "%m/%d/%Y")
+actual_aug <- as_tibble(actual_aug)
+```
+
+```{r}
+str(hist)
+str(augX)
+str(actual_aug)
+```
+
+```{r}
+# Add (static) price lags for training OR recursive lags for forecasting
+add_price_lags <- function(df, price_vec, kmax, forecast = FALSE) {
+  if (!forecast) {
+    for (k in seq_len(kmax)) {
+      df[[paste0("lag", k)]] <- dplyr::lag(price_vec, k)
+    }
+  } else {
+    # forecast mode: don't modify here (lags are filled row-by-row in recursive loop)
+  }
+  return(df)
+}
+```
+
+```{r}
+# Prepare design matrix for glmnet (train + new) with identical columns/order
+make_mm_pair <- function(train_df, new_df) {
+  fml <- as.formula("price ~ . - date - price")
+  mm_train <- model.matrix(fml, data = train_df)
+  mm_new   <- model.matrix(fml, data = new_df)
+  # Drop intercept
+  mm_train <- mm_train[, -1, drop = FALSE]
+  mm_new   <- mm_new[,   -1, drop = FALSE]
+  # Align columns
+  common <- intersect(colnames(mm_train), colnames(mm_new))
+  mm_train <- mm_train[, common, drop = FALSE]
+  mm_new   <- mm_new[,   common, drop = FALSE]
+  list(train = mm_train, new = mm_new)
+}
+```
+
+```{r}
+# Recursive feature builder for Aug 1–14:
+# Using last K_LAGS historical prices and then each model’s previous preds.
+build_aug_recursive <- function(aug_covars, hist_prices, kmax, preds_vec) {
+  # aug_covars: 14-row data.frame with covariates (temp, precip, ... factors)
+  # hist_prices: numeric vector of all historical prices (last element = last hist price)
+  # preds_vec: numeric vector that will be filled step-by-step
+  out <- aug_covars
+  # seed the lags with last k historical prices (most recent first)
+  lag_buf <- rev(tail(hist_prices, kmax))
+  for (i in seq_len(nrow(out))) {
+    # put current lag buffer into this row
+    for (k in 1:kmax) out[[paste0("lag", k)]][i] <- lag_buf[k]
+    # after prediction later on, caller updates lag_buf <- c(pred, head(lag_buf, kmax-1))
+  }
+  out
+}
+```
+
+```{r}
+# Generic recursive forecaster:
+#   - builds 14 rows of features with recursive lags
+#   - calls a model-specific predict-step to get all 14 preds
+recursive_forecast <- function(model_name, pred_step_fun) {
+  # Build a working copy of aug features (start w/ covariates only)
+  aug_cov <- augX %>%
+    select(date, temp, precip, wind, humidity, cloud, radiation, week_day, month)
+
+  # empty preds vector to carry recursive updates
+  preds <- rep(NA_real_, 14)
+  # build lag columns row-by-row using a rolling buffer
+  aug_feat <- aug_cov
+  lag_buf <- rev(tail(hist$price, K_LAGS))
+
+  for (i in seq_len(14)) {
+    # Fill lags for row i from current buffer
+    for (k in 1:K_LAGS) aug_feat[[paste0("lag", k)]][i] <- lag_buf[k]
+
+    # Build train slice (add static lags; drop NA rows caused by lags)
+    train_df <- hist %>%
+      add_price_lags(price_vec = hist$price, kmax = K_LAGS, forecast = FALSE) %>%
+      filter(complete.cases(.))
+
+    # Fit model once on full train; predict one step (row i) on current aug_feat[i,]
+    pred_i <- pred_step_fun(
+      train_df = train_df,
+      new_row  = aug_feat[i, , drop = FALSE]
+    )
+
+    preds[i] <- as.numeric(pred_i)
+    # Update lag buffer for next step
+    lag_buf <- c(preds[i], head(lag_buf, K_LAGS - 1))
+  }
+
+  tibble(
+    model = model_name,
+    date  = aug_cov$date,
+    predicted = preds
+  )
+}
+
+```
+
+
+```{r}
+make_x <- function(train_df, new_row, drop_cols = c("date", "price")) {
+  stopifnot(is.data.frame(train_df), is.data.frame(new_row), nrow(new_row) == 1)
+
+  # 1) Make copies
+  tr <- train_df
+  nw <- new_row
+
+  # 2) Ensure all training columns exist in new_row (create missing as NA)
+  missing_in_new <- setdiff(names(tr), names(nw))
+  if (length(missing_in_new)) {
+    for (nm in missing_in_new) nw[[nm]] <- NA
+  }
+
+  # 3) Remove extra cols that are in new_row but not in train
+  extra_in_new <- setdiff(names(nw), names(tr))
+  if (length(extra_in_new)) nw <- nw[, setdiff(names(nw), extra_in_new), drop = FALSE]
+
+  # 4) Order columns identically
+  nw <- nw[, names(tr), drop = FALSE]
+
+  # 5) Coerce factor columns in both to the SAME levels derived from train_df
+  fac_cols <- names(Filter(is.factor, tr))
+  if (length(fac_cols)) {
+    for (fc in fac_cols) {
+      lev <- levels(tr[[fc]])
+      # keep train as-is (just reset levels to what is already there)
+      tr[[fc]] <- factor(tr[[fc]], levels = lev)
+      # coerce new row to those levels (unseen level -> NA)
+      nw[[fc]] <- factor(as.character(nw[[fc]]), levels = lev)
+    }
+  }
+
+  # 6) Drop non-feature columns
+  keep <- setdiff(names(tr), drop_cols)
+  trX  <- tr[, keep, drop = FALSE]
+  nwX  <- nw[, keep, drop = FALSE]
+
+  # 7) Guard: model.matrix requires factors to have proper class
+  # also make sure character columns are not present
+  char_cols <- names(Filter(is.character, trX))
+  if (length(char_cols)) {
+    for (cc in char_cols) {
+      # try numeric; if fails, keep as factor
+      suppressWarnings({
+        as_num <- suppressWarnings(as.numeric(trX[[cc]]))
+        if (all(!is.na(as_num))) {
+          trX[[cc]] <- as_num
+          nwX[[cc]] <- as.numeric(nwX[[cc]])
+        } else {
+          trX[[cc]] <- factor(trX[[cc]])
+          nwX[[cc]] <- factor(nwX[[cc]], levels = levels(trX[[cc]]))
+        }
+      })
+    }
+  }
+
+  # 8) Build model matrices with identical formula/design
+  form <- as.formula(paste("~", paste(keep, collapse = " + ")))
+  X_train <- model.matrix(form, data = trX)[, -1, drop = FALSE]
+  X_new   <- model.matrix(form, data = nwX)[, -1, drop = FALSE]
+
+  list(train = X_train, new = X_new)
+}
+
+# Convenience wrapper name
+make_mm_pair <- function(train_df, new_row, drop_cols = c("date", "price")) {
+  make_x(train_df, new_row, drop_cols)
+}
+```
+
+
+```{r}
+# Ridge (alpha=0, fixed lambda)
+pred_step_ridge <- function(train_df, new_row) {
+  mats <- make_mm_pair(train_df, new_row)
+  Xtr <- scale(mats$train, center = TRUE, scale = TRUE)
+  cen <- attr(Xtr, "scaled:center"); scl <- attr(Xtr, "scaled:scale")
+  Xnw <- scale(mats$new,   center = cen,  scale = scl)
+  ytr <- train_df$price
+
+  fit <- glmnet(x = Xtr, y = ytr, alpha = 0, lambda = BEST_LAMBDA_RIDGE, standardize = FALSE)
+  as.numeric(predict(fit, newx = Xnw, s = BEST_LAMBDA_RIDGE))
+}
+
+# Lasso (alpha=1, fixed lambda)
+pred_step_lasso <- function(train_df, new_row) {
+  mats <- make_mm_pair(train_df, new_row)
+  Xtr <- scale(mats$train, center = TRUE, scale = TRUE)
+  cen <- attr(Xtr, "scaled:center"); scl <- attr(Xtr, "scaled:scale")
+  Xnw <- scale(mats$new,   center = cen,  scale = scl)
+  ytr <- train_df$price
+
+  fit <- glmnet(x = Xtr, y = ytr, alpha = 1, lambda = BEST_LAMBDA_LASSO, standardize = FALSE)
+  as.numeric(predict(fit, newx = Xnw, s = BEST_LAMBDA_LASSO))
+}
+
+# Elastic Net (fixed alpha; lambda via CV per full-train refit)
+pred_step_enet <- function(train_df, new_row) {
+  mats <- make_mm_pair(train_df, new_row)
+  Xtr <- scale(mats$train, center = TRUE, scale = TRUE)
+  cen <- attr(Xtr, "scaled:center"); scl <- attr(Xtr, "scaled:scale")
+  Xnw <- scale(mats$new,   center = cen,  scale = scl)
+  ytr <- train_df$price
+
+  set.seed(SEED)
+  cvfit <- cv.glmnet(x = Xtr, y = ytr, alpha = BEST_ALPHA_EN, standardize = FALSE)
+  as.numeric(predict(cvfit, newx = Xnw, s = "lambda.min"))
+}
+
+# ---- Bagging (RF with mtry = all predictors) ----
+pred_step_bag <- function(train_df, new_row) {
+  # Make sure factors in new_row match train levels
+  new_row$week_day <- factor(new_row$week_day, levels = levels(train_df$week_day))
+  new_row$month    <- factor(new_row$month,    levels = levels(train_df$month))
+  set.seed(SEED)
+  rf <- randomForest(
+    price ~ . - date,
+    data    = train_df,
+    mtry    = ncol(train_df) - 2,
+    ntree   = BAG_NTREE
+  )
+  predict(rf, newdata = new_row)
+}
+
+# ---- Random Forest ----
+pred_step_rf <- function(train_df, new_row) {
+  new_row$week_day <- factor(new_row$week_day, levels = levels(train_df$week_day))
+  new_row$month    <- factor(new_row$month,    levels = levels(train_df$month))
+  set.seed(SEED)
+  rf <- randomForest(
+    price ~ . - date,
+    data     = train_df,
+    ntree    = RF_NTREE,
+    mtry     = RF_MTRY,
+    nodesize = RF_NODESZ
+  )
+  predict(rf, newdata = new_row)
+}
+
+# ---- Gradient Boosting (gbm) ----
+pred_step_gbm <- function(train_df, new_row) {
+  new_row$week_day <- factor(new_row$week_day, levels = levels(train_df$week_day))
+  new_row$month    <- factor(new_row$month,    levels = levels(train_df$month))
+  set.seed(SEED)
+  gb <- gbm(
+    formula = price ~ . - date,
+    data = train_df,
+    distribution = "gaussian",
+    n.trees = GBM_NTREES,
+    interaction.depth = GBM_DEPTH,
+    shrinkage = GBM_SHRINK,
+    bag.fraction = 0.8,
+    train.fraction = 1.0,
+    verbose = FALSE
+  )
+  predict(gb, newdata = new_row, n.trees = GBM_NTREES)
+}
+
+# ---- XGBoost ----
+pred_step_xgb <- function(train_df, new_row) {
+  # Build aligned numeric matrices (handles factor levels & column order)
+  mats <- make_mm_pair(train_df, new_row)   # returns list(train = Xtr, new = Xnw)
+  Xtr  <- mats$train
+  Xnw  <- mats$new
+  ytr  <- train_df$price
+
+  # Trees don't need scaling
+  dtr <- xgb.DMatrix(data = Xtr, label = ytr)
+
+  set.seed(SEED)
+  bst <- xgboost(
+    data = dtr,
+    objective = "reg:squarederror",
+    nrounds = XGB_NROUNDS,
+    max_depth = XGB_MAXDEP,
+    eta = XGB_ETA,
+    subsample = 0.8,
+    colsample_bytree = 0.9,
+    verbose = 0
+  )
+
+  as.numeric(predict(bst, xgb.DMatrix(Xnw)))
+}
+
+# ---- SVR (RBF) ----
+pred_step_svr <- function(train_df, new_row) {
+  new_row$week_day <- factor(new_row$week_day, levels = levels(train_df$week_day))
+  new_row$month    <- factor(new_row$month,    levels = levels(train_df$month))
+  fml <- as.formula("price ~ . - date")
+  set.seed(SEED)
+  mdl <- svm(fml, data = train_df, kernel = "radial",
+             cost = SVR_C, gamma = SVR_GAMMA, epsilon = SVR_EPS)
+  predict(mdl, newdata = new_row)
+}
+
+# ---- KNN ----
+pred_step_knn <- function(train_df, new_row) {
+  mats <- make_mm_pair(train_df, new_row)   # returns list(train = Xtr, new = Xnw)
+  Xtr  <- mats$train
+  Xnw  <- mats$new
+  ytr  <- train_df$price
+
+  # scale using training stats only
+  Xtr_s <- scale(Xtr, center = TRUE, scale = TRUE)
+  cen   <- attr(Xtr_s, "scaled:center"); scl <- attr(Xtr_s, "scaled:scale")
+  Xnw_s <- scale(Xnw, center = cen, scale = scl)
+
+  FNN::knn.reg(train = Xtr_s, test = Xnw_s, y = ytr, k = KNN_K)$pred
+}
+
+# ---- MARS ----
+pred_step_mars <- function(train_df, new_row) {
+  new_row$week_day <- factor(new_row$week_day, levels = levels(train_df$week_day))
+  new_row$month    <- factor(new_row$month,    levels = levels(train_df$month))
+  fml <- as.formula("price ~ . - date")
+  set.seed(SEED)
+  mdl <- earth(fml, data = train_df, degree = MARS_DEGREE, nk = MARS_NK)
+  predict(mdl, newdata = new_row)
+}
+```
+
+```{r}
+# Run all models (recursive 14-day)
+ridge_fore <- recursive_forecast("Ridge",         pred_step_ridge)
+lasso_fore <- recursive_forecast("Lasso",         pred_step_lasso)
+enet_fore  <- recursive_forecast("Elastic Net",   pred_step_enet)
+bag_fore   <- recursive_forecast("Bagging",       pred_step_bag)
+rf_fore    <- recursive_forecast("Random Forest", pred_step_rf)
+gbm_fore   <- recursive_forecast("GBM",           pred_step_gbm)
+xgb_fore   <- recursive_forecast("XGBoost",       pred_step_xgb)
+svr_fore   <- recursive_forecast("SVR (RBF)",     pred_step_svr)
+knn_fore   <- recursive_forecast("KNN",           pred_step_knn)
+mars_fore  <- recursive_forecast("MARS",          pred_step_mars)
+
+all_forecasts <- bind_rows(
+  ridge_fore, lasso_fore, enet_fore, bag_fore, rf_fore,
+  gbm_fore, xgb_fore, svr_fore, knn_fore, mars_fore
+)
+```
+
+```{r}
+# Evaluate on Aug 1–14 actuals
+eval_df <- all_forecasts %>%
+  left_join(actual_aug, by = "date") %>%
+  rename(actual = price)
+
+mae  <- function(a, p) mean(abs(a - p))
+rmse <- function(a, p) sqrt(mean((a - p)^2))
+mape <- function(a, p, eps = 5) {         # eps=5 works well for the price scale (prices ~ 40–100)
+  denom <- pmax(abs(a), eps)                    # floor the denominator
+  mean(abs(a - p) / denom) * 100
+}
+smape <- function(a, p) mean(200 * abs(p - a) / (abs(a) + abs(p)))
+
+metrics_tbl <- eval_df %>%
+  group_by(model) %>%
+  summarise(
+    MAE  = mae(actual, predicted),
+    RMSE = rmse(actual, predicted),
+    MAPE = mape(actual, predicted),
+    sMAPE = smape(actual, predicted),
+    .groups = "drop"
+  ) %>%
+  arrange(RMSE)
+
+print(metrics_tbl)
+```
+
+```{r}
+ggplot(eval_df, aes(date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted, color = model), alpha = 0.7) +
+  labs(title = "Aug 1–14 forecasts vs actual prices", y = "Price(€/MWh)") +
+  theme_minimal()
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+plot_df <- eval_df
+
+okabe_ito <- c("#E69F00","#56B4E9","#009E73","#F0E442","#0072B2",
+               "#D55E00","#CC79A7","#999999","#A6761D","#1B9E77")
+
+# Build the base plot (note x = date is set globally)
+p <- ggplot(plot_df, aes(x = date)) +
+  geom_line(aes(y = actual), colour = "black", linewidth = 1.1) +
+  geom_line(aes(y = predicted, colour = model), linewidth = 0.9, alpha = 0.95) +
+  scale_color_manual(values = okabe_ito) +
+  scale_x_date(date_breaks = "2 days", date_labels = "%b %d") +
+  labs(title = "Aug 1–14 forecasts vs actual",
+       x = NULL, y = "Price", colour = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        panel.grid.minor = element_blank())
+
+# End labels (last point per model)
+end_labels <- plot_df %>%
+  group_by(model) %>%
+  slice_max(date, n = 1, with_ties = FALSE)
+
+# Add end labels (include x and y in this layer too)
+p <- p +
+  geom_label_repel(
+    data = end_labels,
+    aes(x = date, y = predicted, label = model, colour = model),
+    inherit.aes = FALSE, size = 3, fill = NA, label.size = 0,
+    direction = "y", hjust = 0, nudge_x = 0.5, show.legend = FALSE
+  ) +
+  expand_limits(x = max(plot_df$date) + 1)  # room to the right for labels
+
+p
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(lubridate)
+
+# Order models by RMSE (best first) for legend & label order
+order_by_rmse <- metrics_tbl %>% arrange(RMSE) %>% pull(model)
+plot_df$model <- factor(plot_df$model, levels = order_by_rmse)
+
+okabe_ito <- c("#0072B2","#E69F00","#009E73","#D55E00","#CC79A7",
+               "#56B4E9","#F0E442","#000000","#999999","#A6761D")
+
+# Base plot
+p <- ggplot(plot_df, aes(x = date)) +
+  # actual
+  geom_line(aes(y = actual), linewidth = 1.2, color = "black", lineend = "round") +
+  geom_point(aes(y = actual), size = 1.8, color = "black") +
+  # models
+  geom_line(aes(y = predicted, color = model), linewidth = 0.9, alpha = 0.9, lineend = "round") +
+  scale_color_manual(values = rep(okabe_ito, length.out = nlevels(plot_df$model))) +
+  scale_x_date(date_breaks = "2 days", date_labels = "%b %d") +
+  labs(title = "Forecasts vs actual prices: August 1–14",
+       x = NULL, y = "Price", color = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank())
+
+# Direct end labels (ordered by RMSE)
+end_labels <- plot_df |>
+  group_by(model) |>
+  slice_max(date, n = 1, with_ties = FALSE)
+
+p <- p +
+  geom_label_repel(
+    data = end_labels,
+    aes(x = date, y = predicted, label = model, color = model),
+    inherit.aes = FALSE, size = 3, fill = NA, label.size = 0,
+    direction = "y", hjust = 0, nudge_x = 0.6, show.legend = FALSE
+  ) +
+  expand_limits(x = max(plot_df$date) + 1)
+```
+
+```{r}
+# Direct end labels (forecasts)
+end_labels <- plot_df |>
+  group_by(model) |>
+  slice_max(date, n = 1, with_ties = FALSE)
+
+# End label for actual
+end_labels_actual <- actual_aug %>%
+  slice_max(date, n = 1) %>%
+  mutate(model = "Actual")
+
+p <- p +
+  geom_label_repel(
+    data = end_labels,
+    aes(x = date, y = predicted, label = model, color = model),
+    inherit.aes = FALSE, size = 3, fill = NA, label.size = 0,
+    direction = "y", hjust = 0, nudge_x = 0.6, show.legend = FALSE
+  ) +
+  # actual label (fixed black color)
+  geom_label_repel(
+    data = end_labels_actual,
+    aes(x = date, y = price, label = model),
+    inherit.aes = FALSE, size = 3, fill = NA, label.size = 0,
+    direction = "y", hjust = 0, nudge_x = 0.6, show.legend = FALSE,
+    color = "black"
+  ) +
+  expand_limits(x = max(plot_df$date) + 1)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+eval_df <- all_forecasts %>%
+  left_join(actual_aug, by = "date") %>%
+  rename(actual = price)
+
+# --- metrics (MAPE with epsilon + sMAPE) ---
+mae   <- function(a, p) mean(abs(a - p))
+rmse  <- function(a, p) sqrt(mean((a - p)^2))
+mapeE <- function(a, p, eps = 5) mean(abs((a - p) / pmax(abs(a), eps))) * 100
+smape <- function(a, p) mean( 200 * abs(p - a) / (abs(a) + abs(p) + 1e-8) )
+
+# horizons to test (days from the first date)
+horizons <- c(1, 3, 7, 14)
+start_day <- min(eval_df$date)
+
+# score each horizon
+horizon_scores <- bind_rows(lapply(horizons, function(h) {
+  cutoff <- start_day + (h - 1)
+  eval_df %>%
+    filter(date <= cutoff) %>%
+    group_by(model) %>%
+    summarise(
+      MAE   = mae(actual, predicted),
+      RMSE  = rmse(actual, predicted),
+      MAPE  = mapeE(actual, predicted),   # epsilon MAPE (safer)
+      sMAPE = smape(actual, predicted),
+      .groups = "drop"
+    ) %>%
+    mutate(horizon = h)
+}))
+
+# tidy table: one row per model × horizon
+horizon_scores <- horizon_scores %>%
+  relocate(horizon) %>%
+  arrange(horizon, RMSE)
+
+print(horizon_scores)
+
+# --- Who wins at each horizon (by RMSE) ---
+winners <- horizon_scores %>%
+  group_by(horizon) %>%
+  slice_min(RMSE, n = 1, with_ties = FALSE) %>%
+  ungroup()
+print(winners)
+
+```
+
+```{r}
+# --- Plot 1: RMSE vs horizon lines (one line per model) ---
+ggplot(horizon_scores, aes(x = horizon, y = RMSE, colour = model)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = horizons) +
+  labs(title = "Model error vs forecast horizon",
+       x = "Horizon (days)", y = "RMSE", colour = NULL) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+library(tidytext)
+
+horizon_scores %>%
+  group_by(horizon) %>%
+  mutate(model = reorder_within(model, RMSE, horizon)) %>%
+  ungroup() %>%
+  ggplot(aes(x = model, y = RMSE, fill = model)) +
+  geom_col() +
+  scale_x_reordered() +
+  facet_wrap(~ horizon, scales = "free_y") +
+  coord_flip() +
+  labs(title = "RMSE by model and horizon",
+       x = NULL, y = "RMSE", fill = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+

@@ -1,0 +1,63 @@
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+from xml.etree import ElementTree as ET
+
+TOKEN = '2a74091d-b45c-4c10-a96f-7d49dbf19f3c'
+area = '10YDK-1--------W'  # DK1: Western Denmark
+document_type = 'A44'
+process_type = 'A01'
+
+start_date = datetime(2015, 1, 1)
+end_date = datetime(2025, 8, 1)
+
+data = []
+
+current_date = start_date
+while current_date < end_date:
+    period_start = current_date.strftime('%Y%m%d%H%M')
+    period_end = (current_date + timedelta(days=30)).strftime('%Y%m%d%H%M')
+
+    url = (
+        "https://web-api.tp.entsoe.eu/api?"
+        f"securityToken={TOKEN}"
+        f"&documentType={document_type}"
+        f"&processType={process_type}"
+        f"&in_Domain={area}"
+        f"&out_Domain={area}"
+        f"&periodStart={period_start}"
+        f"&periodEnd={period_end}"
+    )
+
+    print(f"Fetching: {period_start} to {period_end}")
+    response = requests.get(url)
+
+    if response.status_code != 200:
+        print(f"Request failed for {period_start} – skipping...")
+        current_date += timedelta(days=30)
+        continue
+
+    root = ET.fromstring(response.content)
+
+    for timeseries in root.findall(".//{*}TimeSeries"):
+        for period in timeseries.findall(".//{*}Period"):
+            start_time_str = period.find(".//{*}timeInterval/{*}start").text
+            # Parse as UTC
+            start_time = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%MZ")
+            for point in period.findall(".//{*}Point"):
+                position = int(point.find(".//{*}position").text) - 1
+                price = float(point.find(".//{*}price.amount").text)
+                timestamp = start_time + timedelta(hours=position)
+                data.append({"Datetime (UTC)": timestamp, "Price (EUR/MWh)": price})
+
+    current_date += timedelta(days=30)
+
+# Final DataFrame
+df = pd.DataFrame(data)
+df['Date'] = df['Datetime (UTC)'].dt.date
+daily_df = df.groupby('Date')['Price (EUR/MWh)'].mean().reset_index()
+
+daily_df = daily_df.iloc[1:-6].reset_index(drop=True)
+
+# Export
+daily_df.to_csv("entsoe_daily_prices_DK1.csv", index=False)
