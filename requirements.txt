@@ -1,0 +1,9 @@
+pandas
+numpy
+requests
+tqdm
+matplotlib
+adjustText
+dmi-open-data
+scikit-learn
+torch
