@@ -93,6 +93,7 @@ Below is an overview of the main files:
 
 DK1_Energy_Price_Forecasting/
   energy_data_API.py              (Downloads DK1 electricity price data through API)
+  
   merged_data.py                  (Merges price data with weather forecasts into a unified dataset)
   DMI_temp.py                     (Downloads and processes historical temperature data)
   DMI_wind.py                     (Downloads and processes historical wind speed data)
