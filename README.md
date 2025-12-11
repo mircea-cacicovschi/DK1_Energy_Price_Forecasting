@@ -95,23 +95,41 @@ DK1_Energy_Price_Forecasting/
   energy_data_API.py              (Downloads DK1 electricity price data through API)
   
   merged_data.py                  (Merges price data with weather forecasts into a unified dataset)
+  
   DMI_temp.py                     (Downloads and processes historical temperature data)
+  
   DMI_wind.py                     (Downloads and processes historical wind speed data)
+  
   DMI_hum.py                      (Downloads and processes historical humidity data)
+  
   DMI_cloud.py                    (Downloads and processes historical cloud cover data)
+  
   DMI_precip.py                   (Downloads and processes historical precipitation data)
+  
   DMI_rad.py                      (Downloads and processes historical radiation data)
+  
   forecasted_variables.py         (Downloads and aggregated weather forecasts across all 45 DK1 stations)
+  
   test_energy_prices_aug2025.py   (Pseudo test evaluation script for 1 to 14 August 2025)
+  
   one_station.py                  (Handles data for a single weather station)
+  
   regions_DK.py                   (Defines regions and station groupings used in data aggregation)
+  
   testing.py                      (General debugging or testing utilities)
+  
   thesis work v3.qmd              (Quarto document containing model straining and analysis)
+  
   test set.qmd                    (Quarto file for test set documentation and evaluation)
+  
   thesis plots etc.R              (R script for generating plots used in the thesis)
+  
   Deep Learning Models.ipynb      (Trains deep learning models: FNN, LSTM, GRU, CNN, TCN)
+  
   Pseudo-test set DL.ipynb        (Evaluates deep learning models on the pseudo test period)
+  
   README.md                       (This file)
+  
   (generated CSV files)           (Automatically created when running data scripts)
 
 No subfolders are required. All scripts operate on files stored in the same directory.
