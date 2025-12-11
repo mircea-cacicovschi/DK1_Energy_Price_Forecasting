@@ -178,3 +178,5 @@ python merged_data.py
 | GRU               | 30.37    | 37.27    | Similar to LSTM                                                 |
 | CNN               | 32.50    | 39.86    | Not suitable for this time series task                          |
 | TCN               | 29.01    | 36.26    | Best of the deep learning models, but still far below ML models |
+
+Among all evaluated methods, Ridge Regression delivered the strongest predictive accuracy (MAE 8.16, RMSE 9.95), substantially outperforming both traditional machine learning baselines and all deep learning architectures, which showed significantly weaker generalization on the DK1 day-ahead forecasting problem.
