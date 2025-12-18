@@ -234,24 +234,3 @@ ggplot(plot_data, aes(x = day, y = iteration, fill = type)) +
     x = "Time (days)", y = "Cross-validation iteration"
   ) +
   theme_minimal()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
