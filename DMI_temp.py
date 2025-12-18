@@ -1,12 +1,19 @@
 from dmi_open_data import DMIOpenDataClient, Parameter
 from datetime import datetime
 import pandas as pd
+import os
+
 
 # Load your curated DK1 stations list
 df_stations = pd.read_csv("dk1_stations_final.csv")
 
-# Initialize the API client
-KEY = "6a73aa34-dc49-49d7-af91-5b8d487edf9f"
+# Initialize API client
+KEY = os.getenv("DMI_API_KEY")
+if KEY is None:
+    raise RuntimeError(
+        "DMI_API_KEY environment variable not set. "
+        "Please set it before running this script."
+    )
 client = DMIOpenDataClient(api_key=KEY)
 
 # Prepare to collect daily temperature data per station
