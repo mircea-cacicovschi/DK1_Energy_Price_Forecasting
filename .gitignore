@@ -1,0 +1,62 @@
+# ----------------------
+# Python
+# ----------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# ----------------------
+# Jupyter / Colab
+# ----------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ----------------------
+# R
+# ----------------------
+.Rhistory
+.RData
+.Rproj.user/
+
+# renv (optional)
+renv/library/
+renv/python/
+renv/staging/
+
+# ----------------------
+# Quarto / LaTeX
+# ----------------------
+*_cache/
+*_files/
+.quarto/
+*.log
+*.aux
+*.out
+*.toc
+
+# ----------------------
+# Generated outputs
+# ----------------------
+*.csv
+*.xlsx
+*.parquet
+*.pkl
+*.rds
+*.feather
+
+# ----------------------
+# OS / editor junk
+# ----------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
