@@ -1,8 +1,16 @@
+import os
 from dmi_open_data import DMIOpenDataClient, Parameter
 from datetime import datetime
 import pandas as pd
 
-KEY = "6a73aa34-dc49-49d7-af91-5b8d487edf9f"
+# Read DMI API key from environment
+KEY = os.getenv("DMI_API_KEY")
+if KEY is None:
+    raise RuntimeError(
+        "DMI_API_KEY environment variable not set. "
+        "Please set it before running this script."
+    )
+
 client = DMIOpenDataClient(api_key=KEY)
 
 # Example: Aarhus DMI station (or use client.get_closest_station())
