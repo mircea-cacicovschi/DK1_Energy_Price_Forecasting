@@ -1,8 +1,15 @@
+import os 
 from dmi_open_data import DMIOpenDataClient
 import pandas as pd
 
-# Initialize DMI API client with your API key
-KEY = "6a73aa34-dc49-49d7-af91-5b8d487edf9f"
+# Initialize DMI API client using environment variable
+KEY = os.getenv("DMI_API_KEY")
+if KEY is None:
+    raise RuntimeError(
+        "DMI_API_KEY environment variable not set. "
+        "Please set it before running this script."
+    )
+
 client = DMIOpenDataClient(api_key=KEY)
 
 # Get all stations (GeoJSON-style structure)
