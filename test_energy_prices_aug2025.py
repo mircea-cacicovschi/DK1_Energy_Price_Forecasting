@@ -1,9 +1,18 @@
+import os 
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-TOKEN = '2a74091d-b45c-4c10-a96f-7d49dbf19f3c'
+# Read ENTSO-E token from environment
+TOKEN = os.getenv("ENTSOE_API_KEY")
+
+if TOKEN is None:
+    raise RuntimeError(
+        "ENTSOE_API_KEY environment variable not set. "
+        "Please set it before running this script."
+    )
+    
 area = '10YDK-1--------W'  # DK1: Western Denmark
 document_type = 'A44'      # Day-ahead prices
 process_type = 'A01'       # Realised
