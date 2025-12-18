@@ -47,17 +47,18 @@ The project uses daily DK1 electricity price data combined with 14-day weather f
 
 Engineered features include lag structures, rolling averages, weather forecast transformations, and calendar effects.
 
-Raw datasets are **not** included in the repository. Users must generate the data using the provided scripts.
+Raw datasets are **not included** in the repository. Users must generate the data using the provided scripts.
 
 ---
 
 ## Data Access and Generation
 
 All generated datasets are saved directly in the same folder as the scripts.  
-There is no separate data directory.  
+There is no separate data directory.
+
 Other scripts expect to load files using simple filenames (for example: `"example.csv"`) without any folder path.
 
-To generate the required datasets, run these scripts from inside the repository folder:
+To generate the required datasets, run the following scripts from inside the repository folder:
 
 python energy_data_API.py  
 python DMI_temp.py  
@@ -73,7 +74,7 @@ Make sure you are in the repository folder when running these scripts so that al
 
 ## Cross Validation Strategy
 
-All models use expanding window cross validation. This approach simulates real world forecasting by gradually expanding the training window while keeping evaluation periods fixed.
+All models use expanding window cross validation (rolling origin evaluation). This approach simulates real world forecasting by gradually expanding the training window while keeping evaluation periods fixed.
 
 Key details:
 - Forecast horizon: 14 days  
@@ -89,10 +90,8 @@ This strategy provides a realistic estimate of model performance and prevents da
 
 The repository uses a flat layout. All scripts, data generation tools, model training code, notebooks, and output files are stored in the same directory.
 
-Below is an overview of the main files:
-
 DK1_Energy_Price_Forecasting/  
-  energy_data_API.py              (Downloads DK1 electricity price data through the API)  
+  energy_data_API.py              (Downloads DK1 electricity price data via ENTSO-E API)  
   merged_data.py                  (Merges price data with weather forecasts into a unified dataset)  
   DMI_temp.py                     (Downloads and processes historical temperature data)  
   DMI_wind.py                     (Downloads and processes historical wind speed data)  
@@ -104,16 +103,17 @@ DK1_Energy_Price_Forecasting/
   test_energy_prices_aug2025.py   (Pseudo-test evaluation script for 1 to 14 August 2025)  
   one_station.py                  (Processes and visualizes data for a single weather station)  
   regions_DK.py                   (Defines regions and station groupings used in data aggregation)  
-  testing.py                      (General debugging or utility script)  
+  testing.py                      (General testing and debugging utilities)  
   thesis work v3.qmd              (Quarto document containing model training and analysis)  
   test set.qmd                    (Quarto file for test set documentation and evaluation)  
   thesis plots etc.R              (R script for generating plots used in the thesis)  
-  Deep Learning Models.ipynb      (Trains deep learning models: FNN, LSTM, GRU, CNN, TCN)  
-  Pseudo-test set DL.ipynb        (Evaluates deep learning models on the pseudo-test period)  
+  Deep Learning Models.ipynb      (Training notebook for FNN, LSTM, GRU, CNN, and TCN models)  
+  Pseudo-test set DL.ipynb        (Evaluation notebook for deep learning models on the pseudo-test period)  
   requirements.txt                (Python dependencies)  
   requirements_r.txt              (R dependencies)  
+  .gitignore                      (Ignored files and generated outputs)  
   README.md                       (This file)  
-  (generated CSV files)           (Automatically created when running data scripts)
+  (generated CSV files)           (Created automatically when running data scripts)
 
 No subfolders are required. All scripts operate on files stored in the same directory.
 
@@ -129,6 +129,42 @@ This notebook contains the training workflow for multiple deep learning models, 
 **Pseudo-test set DL.ipynb**  
 This notebook evaluates the best performing deep learning models on the pseudo-test period from 1 to 14 August 2025. It reconstructs forecasts, applies inverse scaling, and calculates MAE, RMSE, and MAPE.
 
+> Both notebooks are committed **without cell outputs** for readability.  
+> All results reported in the README were generated using this code.
+
+---
+
+## Environment Setup
+
+This project uses both Python and R.
+
+### Python
+Install required Python packages:
+
+pip install -r requirements.txt  
+
+### R
+Install required R packages:
+
+install.packages(readLines("requirements_r.txt"))
+
+Alternatively, if using renv:
+
+install.packages("renv")  
+renv::restore()
+
+---
+
+## API Keys and Environment Variables
+
+Some data collection scripts require external API keys. For security reasons, API keys are **not stored in this repository**.
+
+Required environment variables:
+- DMI_API_KEY     (used by DMI weather data scripts)
+- ENTSOE_API_KEY  (used by ENTSO-E electricity price scripts)
+
+Set these variables before running any data collection scripts.
+
 ---
 
 ## How to Run the Code
@@ -142,41 +178,39 @@ cd DK1_Energy_Price_Forecasting
 
 pip install -r requirements.txt  
 
-3. Install R dependencies (optional, only for R plots or Quarto files):
+3. (Optional) Install R dependencies if running R scripts or Quarto files.
 
-Install packages listed in requirements_r.txt  
-or use renv::restore() if you are using renv.
+4. Set required environment variables (API keys).
 
-4. Generate the datasets by running the data scripts.
+5. Generate datasets by running the data scripts.
 
-5. Run preprocessing:
+6. Run preprocessing:
 
 python merged_data.py  
 
-6. Train machine learning or deep learning models using the available Python, R, or notebook files.
+7. Train machine learning or deep learning models using the available Python scripts, R scripts, or notebooks.
 
 ---
 
 ## Results Summary
 
+Model | MAE | RMSE | Notes  
+------|------|--------|--------  
+Seasonal Naive | 25.08 | 30.99 | Baseline  
+Lasso | 13.58 | 17.05 | Linear model, moderate performance  
+**Ridge** | **8.16** | **9.95** | **Best overall performance across all models**  
+Elastic Net | 13.58 | 17.02 | Similar to Lasso  
+Bagging | 14.45 | 18.09 | Ensemble method  
+Random Forest | 14.28 | 17.84 | Strong ML model, stable  
+Gradient Boosting | 13.64 | 16.89 | Stable and accurate  
+XGBoost | 13.78 | 17.33 | Boosting method  
+SVR | 12.87 | 16.19 | Strong nonlinear performance  
+KNN Regression | 23.69 | 28.65 | Poor performance on this dataset  
+MARS | 14.50 | 17.93 | Flexible spline model  
+Feedforward NN | 26.68 | 32.24 | Underperforms, likely due to limited data  
+LSTM | 31.57 | 38.52 | Initial deep learning baseline  
+GRU | 30.37 | 37.27 | Similar to LSTM  
+CNN | 32.50 | 39.86 | Not suitable for this task  
+TCN | 29.01 | 36.26 | Best deep learning model, still below ML models  
 
-| Model             | MAE      | RMSE     | Notes                                                           |
-| ----------------- | -------- | -------- | --------------------------------------------------------------- |
-| Seasonal Naive    | 25.08    | 30.99    | Baseline                                                        |
-| Lasso             | 13.58    | 17.05    | Linear model, moderate performance                              |
-| **Ridge**         | **8.16** | **9.95** | **Best overall performance across all models**                  |
-| Elastic Net       | 13.58    | 17.02    | Similar to Lasso                                                |
-| Bagging           | 14.45    | 18.09    | Ensemble method                                                 |
-| Random Forest     | 14.28    | 17.84    | Strong ML model, stable                                         |
-| Gradient Boosting | 13.64    | 16.89    | Stable and accurate                                             |
-| XGBoost           | 13.78    | 17.33    | Boosting method, similar to GBM                                 |
-| SVR               | 12.87    | 16.19    | Strong nonlinear performance                                    |
-| KNN Regression    | 23.69    | 28.65    | Performs poorly on this dataset                                 |
-| MARS              | 14.50    | 17.93    | Flexible spline model                                           |
-| Feedforward NN    | 26.68    | 32.24    | Underperforms, likely due to limited data                       |
-| LSTM              | 31.57    | 38.52    | Initial deep learning baseline, poor performance                |
-| GRU               | 30.37    | 37.27    | Similar to LSTM                                                 |
-| CNN               | 32.50    | 39.86    | Not suitable for this time series task                          |
-| TCN               | 29.01    | 36.26    | Best of the deep learning models, but still far below ML models |
-
-Among all evaluated methods, Ridge Regression delivered the strongest predictive accuracy (MAE 8.16, RMSE 9.95), substantially outperforming both traditional machine learning baselines and all deep learning architectures, which showed significantly weaker generalization on the DK1 day-ahead forecasting problem.
+**Ridge Regression clearly outperformed all other models, achieving an MAE of 8.16 and RMSE of 9.95, while every deep learning architecture underperformed by a wide margin on the DK1 day-ahead forecasting task.**
