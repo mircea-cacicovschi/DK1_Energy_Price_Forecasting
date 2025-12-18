@@ -1,0 +1,2307 @@
+---
+title: "Master thesis work"
+format: docx
+editor: source
+---
+
+## Data Preparation
+
+```{r}
+data <- read.csv("merged_energy_weather_data.csv")
+
+```
+
+```{r}
+attach(data)
+str(data)
+
+```
+
+```{r}
+colnames(data) <- c("date", "price", "temp", "precip", "wind", "humidity", "cloud", "radiation", "week_day", "month", "day_month")
+```
+
+```{r}
+data$date <- as.Date(data$date, format = "%m/%d/%Y")
+data$week_day <- as.factor(data$week_day)
+data$month <- as.factor(data$month)
+data$day_month <- as.factor(data$day_month)
+```
+
+```{r}
+boxplot(price ~ week_day, data = data, main = "Price by Week Day")
+boxplot(price ~ month, data = data, main = "Price by Month")
+boxplot(price ~ day_month, data = data, main = "Price by Day of Month")
+```
+
+```{r}
+summary(aov(price ~ week_day, data = data))
+summary(aov(price ~ month, data = data))
+summary(aov(price ~ day_month, data = data))
+```
+
+```{r}
+numeric_vars <- sapply(data, is.numeric)
+cor_matrix <- cor(data[, numeric_vars], use = "complete.obs")
+cor_with_price <- cor_matrix["price", ]
+cor_with_price
+sort(cor_with_price, decreasing = TRUE)
+```
+
+```{r}
+plot(data$date, data$price,
+     type = "l",                      
+     col = "darkblue",
+     xlab = "Date",
+     ylab = "Price",
+     main = "Energy Price Over Time")
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(data, aes(x = date, y = price)) +
+  geom_line(color = "steelblue", linewidth = 0.4) +
+  labs(title = "Energy Price Over Time",
+       x = "Date",
+       y = "Price") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+```
+
+# Benchmark
+
+```{r}
+# Seasonal naive benchmark
+# Decision on type type of seasonality 
+library(dplyr)
+
+data_2022 <- data %>%
+  filter(date >= as.Date("2022-01-01") & date <= as.Date("2022-12-31"))
+
+library(ggplot2)
+
+ggplot(data_2022, aes(x = date, y = price)) +
+  geom_line(color = "darkblue") +
+  labs(title = "Energy Price in 2022",
+       x = "Date", y = "Price") +
+  theme_minimal()
+
+# suggests yearly seasonality 
+
+```
+
+```{r}
+data_2019 <- data %>%
+  filter(date >= as.Date("2019-01-01") & date <= as.Date("2019-12-31"))
+
+
+ggplot(data_2019, aes(x = date, y = price)) +
+  geom_line(color = "darkblue") +
+  labs(title = "Energy Price in 2019",
+       x = "Date", y = "Price") +
+  theme_minimal()
+
+# suggests maybe weekly seasonality 
+
+
+```
+
+```{r}
+library(Metrics)
+library(dplyr)
+library(ggplot2)
+
+# --- Seasonal Naive Function ---
+seasonal_naive_cv_preds <- function(data, season_length = 7, horizon = 14, initial = 365, max_folds = 1000) {
+  price <- data$price
+  dates <- data$date
+  n <- length(price)
+
+  results <- list()
+  mae_vec <- numeric()
+  rmse_vec <- numeric()
+  mape_vec <- numeric()
+
+  for (i in 0:(max_folds - 1)) {
+    train_end <- initial + i * horizon
+    test_start <- train_end + 1
+    test_end <- train_end + horizon
+
+    if (test_end > n) break
+
+    actuals <- price[test_start:test_end]
+    test_dates <- dates[test_start:test_end]
+    preds_idx <- (test_start - season_length):(test_end - season_length)
+
+    if (min(preds_idx) < 1) next
+
+    preds <- price[preds_idx]
+
+    if (length(preds) != length(actuals) || any(is.na(preds)) || any(is.na(actuals)) || any(actuals == 0)) next
+
+    mae_vec[i + 1] <- mae(actuals, preds)
+    rmse_vec[i + 1] <- rmse(actuals, preds)
+    mape_vec[i + 1] <- mape(actuals, preds) * 100
+
+    results[[i + 1]] <- data.frame(
+      fold = i + 1,
+      date = test_dates,
+      actual = actuals,
+      predicted = preds
+    )
+  }
+
+  preds_df <- do.call(rbind, results)
+  metrics_df <- data.frame(
+    fold = seq_along(mae_vec),
+    mae = mae_vec,
+    rmse = rmse_vec,
+    mape = mape_vec
+  )
+
+  return(list(predictions = preds_df, metrics = metrics_df))
+}
+```
+
+```{r}
+# Comparison over multiple initial values
+initial_values <- c(365, 730, 1095, 1460)
+season_lengths <- c(7, 365)  # Weekly and Yearly
+horizon <- 14
+results_list <- list()
+
+for (init in initial_values) {
+  for (m in season_lengths) {
+    set.seed(123)
+    result <- seasonal_naive_cv_preds(
+      data = data,
+      season_length = m,
+      horizon = horizon,
+      initial = init,
+      max_folds = 1000
+    )
+    result$metrics$initial <- init
+    result$metrics$model <- paste0(ifelse(m == 7, "Weekly", "Yearly"), " (m=", m, ")")
+    results_list[[paste(init, m, sep = "_")]] <- result$metrics
+  }
+}
+```
+
+```{r}
+# Combine all results
+all_metrics <- bind_rows(results_list)
+
+# Summary Table
+summary_table <- aggregate(. ~ model + initial,
+                           data = all_metrics[, c("model", "initial", "mae", "rmse", "mape")],
+                           FUN = mean)
+print(summary_table)
+```
+
+```{r}
+# MAE
+ggplot(summary_table, aes(x = initial, y = mae, color = model)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  labs(title = "MAE vs Initial Training Size (14-Day Forecast)", x = "Initial (days)", y = "MAE") +
+  theme_minimal()
+```
+
+```{r}
+# RMSE
+ggplot(summary_table, aes(x = initial, y = rmse, color = model)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  labs(title = "RMSE vs Initial Training Size (14-Day Forecast)", x = "Initial (days)", y = "RMSE") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(summary_table, aes(x = initial, y = mape, color = model)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  labs(title = "MAPE vs Initial Training Size (14-Day Forecast)", x = "Initial (days)", y = "MAPE (%)") +
+  theme_minimal()
+```
+
+```{r}
+best_model_metrics <- all_metrics %>%
+  filter(model == "Weekly (m=7)", initial == 365)
+
+best_summary <- best_model_metrics %>%
+  summarise(
+    model = "Weekly (m=7)",
+    initial = 365,
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+
+print(best_summary)
+```
+
+```{r}
+# Best performance is with initial = 365 (1 year), using weekly seasonality (m = 7)
+# As initial increases:
+# MAE, RMSE, and MAPE gradually worsen for both models
+# Suggests concept drift: past data becomes less useful for future forecasts
+
+# Yearly seasonality (m = 365) performs significantly worse in all settings, especially on longer windows
+
+# Short, recent history + shorter seasonal cycle (weekly) provides better benchmarks.
+# This likely reflects real-world energy price behavior:
+# Recent weeks are more predictive than the same date last year.
+# These findings give a solid justification for:
+# Choosing initial = 365 as the seasonal naive baseline
+# Using weekly seasonality as the main benchmark, not yearly
+
+```
+
+```{r}
+# --- Get predictions for the best setup (Weekly, initial = 365) ---
+set.seed(123)
+best_preds <- seasonal_naive_cv_preds(
+  data = data,
+  season_length = 7,
+  horizon = 14,
+  initial = 365,
+  max_folds = 1000
+)$predictions
+
+# Plot actual vs predicted 
+ggplot() +
+  geom_line(data = data, aes(x = date, y = price), color = "black", linewidth = 0.6) +
+  geom_line(data = best_preds, aes(x = date, y = predicted, group = fold),
+            color = "blue", linetype = "dashed", linewidth = 0.7, alpha = 0.4) +
+  labs(title = "Seasonal Naive Predictions (Weekly, 14-Day Horizon)",
+       x = "Date", y = "Price") +
+  theme_minimal()
+
+```
+
+```{r}
+library(dplyr)
+
+# Select 1 fold per month
+sparse_preds <- best_preds %>%
+  group_by(fold) %>%
+  filter(first(date) == min(date)) %>%
+  ungroup() %>%
+  mutate(month = lubridate::floor_date(date, unit = "month")) %>%
+  group_by(month) %>%
+  slice(1) %>%
+  ungroup()
+
+# Extract only those folds
+selected_folds <- unique(sparse_preds$fold)
+plot_data <- best_preds %>% filter(fold %in% selected_folds)
+
+# Plot
+ggplot() +
+  geom_line(data = data, aes(x = date, y = price), color = "black", linewidth = 0.6) +
+  geom_line(data = plot_data, aes(x = date, y = predicted, group = fold),
+            color = "blue", linetype = "dashed", linewidth = 0.6) +
+  labs(title = "Seasonal Naive Predictions — Selected Folds (14-Day Horizon)",
+       x = "Date", y = "Price") +
+  theme_minimal()
+```
+
+# Lasso regression
+
+```{r}
+str(data)
+```
+
+```{r}
+sum(is.na(data))
+colSums(is.na(data))
+```
+
+```{r}
+data[is.na(data$cloud), c("date", "cloud")]
+# All days with New Year's Eve. Makes sense as observation obstructed by fireworks
+```
+
+```{r}
+# Impute with average of Dec 30 and Jan 1
+library(dplyr)
+
+data <- data %>%
+  arrange(date) %>%
+  mutate(cloud = ifelse(
+    is.na(cloud),
+    (lag(cloud) + lead(cloud)) / 2,
+    cloud
+  ))
+sum(is.na(data))
+```
+
+```{r}
+# Drop day number in month (not relevant)
+data <- data %>% select(-day_month)
+```
+
+```{r}
+acf(data$price, lag.max = 60)  
+```
+
+```{r}
+pacf(data$price, lag.max = 60)
+```
+
+```{r}
+attach(data)
+summary(price)
+```
+
+```{r}
+library(dplyr)
+library(glmnet)
+library(tidyr)
+
+# --- Parameters ---
+initial <- 365        # Initial training size (1 year)
+horizon <- 14         # Forecast horizon (2 weeks)
+max_lag <- 7          # How many price lags to include
+
+# --- Prepare Data ---
+data <- data %>%
+  mutate(date = as.Date(date),
+         week_day = as.factor(week_day),
+         month = as.factor(month))
+
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# --- Storage ---
+lasso_metrics <- data.frame()
+predictions_list <- list()
+
+# --- Rolling Origin Loop ---
+for (i in 0:(folds - 1)) {
+  # Split indices
+  start_idx <- 1
+  end_idx <- initial + i * horizon
+  test_idx <- (end_idx + 1):(end_idx + horizon)
+
+  # Train/test split
+  train_data <- data[start_idx:end_idx, ]
+  test_data <- data[test_idx, ]
+
+  # Add price lags to train set
+  for (k in 1:max_lag) {
+    train_data[[paste0("lag", k)]] <- dplyr::lag(train_data$price, k)
+    test_data[[paste0("lag", k)]] <- dplyr::lag(data$price, k)[test_idx]
+  }
+
+  # Remove NAs from train only (due to lags)
+  train_data <- train_data %>% filter(complete.cases(.))
+
+  # Model matrices
+  X_train <- model.matrix(price ~ . - date - price, data = train_data)[, -1]
+  y_train <- train_data$price
+
+  X_test <- model.matrix(price ~ . - date - price, data = test_data)[, -1]
+  y_test <- test_data$price
+  test_dates <- test_data$date
+
+  # Scale using train stats
+  train_mean <- attr(scale(X_train), "scaled:center")
+  train_sd <- attr(scale(X_train), "scaled:scale")
+  X_train <- scale(X_train, center = train_mean, scale = train_sd)
+  X_test <- scale(X_test, center = train_mean, scale = train_sd)
+
+  # Fit Lasso with CV
+  set.seed(123)
+  cv_fit <- cv.glmnet(X_train, y_train, alpha = 1, standardize = FALSE)
+  y_pred <- predict(cv_fit, newx = X_test, s = "lambda.min")
+
+  # Evaluation
+  valid_idx <- !is.na(y_test) & !is.na(y_pred)
+  mae <- mean(abs(y_test[valid_idx] - y_pred[valid_idx]))
+  rmse <- sqrt(mean((y_test[valid_idx] - y_pred[valid_idx])^2))
+  mape <- mean(abs((y_test[valid_idx] - y_pred[valid_idx]) / y_test[valid_idx])) * 100
+
+  # Store results
+  lasso_metrics <- rbind(lasso_metrics, data.frame(fold = i + 1, mae, rmse, mape, lambda = cv_fit$lambda.min))
+  predictions_list[[i + 1]] <- data.frame(
+    date = test_dates,
+    actual = y_test,
+    predicted = as.numeric(y_pred),
+    fold = i + 1
+  )
+}
+
+all_preds <- dplyr::bind_rows(predictions_list)
+
+# --- Summary ---
+lasso_summary <- lasso_metrics %>%
+  summarise(
+    model = "Lasso",
+    initial = initial,
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+
+print(lasso_summary)
+```
+
+```{r}
+subset_preds <- all_preds %>% filter(fold %% 10 == 1)
+
+ggplot(subset_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.6) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.6) +
+  facet_wrap(~ fold, scales = "free") +  # Free both axes
+  scale_x_date(date_labels = "%b %d", date_breaks = "7 days") +
+  labs(title = "Lasso Predictions — Selected Folds (14-Day Horizon)", y = "Price", x = "Date") +
+  theme_minimal()
+
+```
+
+```{r}
+lasso_metrics
+```
+
+```{r}
+lasso_summary <- lasso_metrics %>%
+  summarise(
+    model = "Lasso",
+    initial = initial,
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+
+print(lasso_summary)
+```
+
+```{r}
+
+fold_1 <- predictions_list[[10]]
+
+library(ggplot2)
+
+ggplot(fold_1, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 1) +
+  geom_line(aes(y = predicted), color = "blue", size = 1) +
+  labs(title = "Lasso: Fold X Prediction vs Actual",
+       x = "Date", y = "Price") +
+  theme_minimal()
+```
+
+```{r}
+summary(cv_fit)
+```
+
+```{r}
+# feature importance 
+library(dplyr)
+data <- data %>%
+  mutate(date = as.Date(date)) %>%
+  mutate(
+    lag1 = lag(price, 1),
+    lag2 = lag(price, 2),
+    lag3 = lag(price, 3),
+    lag4 = lag(price, 4),
+    lag5 = lag(price, 5),
+    lag6 = lag(price, 6),
+    lag7 = lag(price, 7)
+  )
+model_data <- data %>%
+  select(-date) %>%
+  na.omit()
+model_data$week_day <- as.factor(model_data$week_day)
+model_data$month <- as.factor(model_data$month)
+X <- model.matrix(price ~ . - price, data = model_data)[, -1]
+X_scaled <- scale(X)
+y <- model_data$price
+```
+
+```{r}
+library(glmnet)
+
+# Fit Lasso
+lasso_full <- cv.glmnet(X_scaled, y, alpha = 1, standardize = FALSE)
+
+# Coefficients
+coef_lasso <- coef(lasso_full, s = "lambda.min")
+
+# Make readable
+important_features <- as.data.frame(as.matrix(coef_lasso))
+important_features$feature <- rownames(important_features)
+colnames(important_features)[1] <- "coefficient"
+
+# Filter non-zero
+important_features <- important_features %>%
+  filter(coefficient != 0 & feature != "(Intercept)") %>%
+  arrange(desc(abs(coefficient)))
+
+# View
+print(important_features)
+```
+
+```{r}
+library(ggplot2)
+ggplot(important_features, aes(x = reorder(feature, coefficient), y = coefficient)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Lasso Feature Importances", x = "Feature", y = "Coefficient")
+```
+
+```{r}
+ggplot(all_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(title = "Lasso Predictions (Expanding Window, 14-Day Horizon)", y = "Price", x = "Date", subtitle = "Black: Actual | Blue: Forecast") +
+  theme_minimal()
+```
+```{r}
+## Additional section to decide on lambda for test set
+library(ggplot2)
+ggplot(lasso_metrics, aes(fold, lambda)) +
+  geom_line() + geom_point(size = 0.6) +
+  labs(title = "Lasso λ by expanding-window fold", x = "Fold", y = "lambda")
+```
+```{r}
+# Extract last 12 folds
+lam_recent <- tail(lasso_metrics$lambda, 12)
+
+# Take median and mean
+lam_recent_median <- median(lam_recent, na.rm = TRUE)
+lam_recent_mean   <- mean(lam_recent, na.rm = TRUE)
+
+cat("Recent 12-fold λ median:", lam_recent_median, "\n")
+cat("Recent 12-fold λ mean:", lam_recent_mean, "\n")
+```
+
+# Ridge Regression
+
+```{r}
+library(dplyr)
+library(glmnet)
+library(ggplot2)
+# Design matrix (remove intercept, date, price)
+X <- model.matrix(price ~ . - date - price, data = data)[, -1]
+X_scaled <- scale(X)
+
+# Target and dates
+y <- data$price
+dates <- data$date
+
+# Ridge CV with expanding window
+initial <- 365
+horizon <- 14
+n_obs <- nrow(X_scaled)
+folds <- floor((n_obs - initial) / horizon)
+
+ridge_metrics <- data.frame()
+ridge_predictions <- list()
+
+for (i in 0:(folds - 1)) {
+  start_idx <- 1
+  end_idx <- initial + i * horizon
+  test_idx <- (end_idx + 1):(end_idx + horizon)
+
+  # Subsets
+  X_train <- X_scaled[start_idx:end_idx, ]
+  y_train <- y[start_idx:end_idx]
+  X_test <- X_scaled[test_idx, ]
+  y_test <- y[test_idx]
+  test_dates <- dates[test_idx]
+
+  # Drop NA from train only
+  train_complete <- complete.cases(X_train, y_train)
+  X_train <- X_train[train_complete, ]
+  y_train <- y_train[train_complete]
+
+  # Ridge regression: alpha = 0 (also setting seed)
+  set.seed(123)
+  cv_fit <- cv.glmnet(X_train, y_train, alpha = 0, standardize = FALSE)
+
+  # Predict
+  y_pred <- predict(cv_fit, newx = X_test, s = "lambda.min")
+
+  # Metrics (skip test NA)
+  valid_idx <- !is.na(y_test) & !is.na(y_pred)
+  mae <- mean(abs(y_test[valid_idx] - y_pred[valid_idx]))
+  rmse <- sqrt(mean((y_test[valid_idx] - y_pred[valid_idx])^2))
+  mape <- mean(abs((y_test[valid_idx] - y_pred[valid_idx]) / y_test[valid_idx])) * 100
+
+  # Save metrics and predictions
+  ridge_metrics <- rbind(ridge_metrics, data.frame(fold = i + 1, mae, rmse, mape, lambda = cv_fit$lambda.min))
+
+  ridge_predictions[[i + 1]] <- data.frame(
+    date = test_dates,
+    actual = y_test,
+    predicted = as.numeric(y_pred),
+    fold = i + 1
+  )
+}
+
+# Combine and summarize
+ridge_all_preds <- do.call(rbind, ridge_predictions)
+
+ridge_summary <- ridge_metrics %>%
+  summarise(
+    model = "Ridge",
+    initial = initial,
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+
+print(ridge_summary)
+
+# Plot predictions across folds
+subset_preds2 <-ridge_all_preds %>% filter(fold %% 10 == 1)
+
+ggplot(subset_preds2, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.6) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.6) +
+  facet_wrap(~ fold, scales = "free") + 
+  scale_x_date(date_labels = "%b %d", date_breaks = "7 days") +
+  labs(title = "Ridge Predictions — Selected Folds (14-Day Horizon)", y = "Price", x = "Date") +
+  theme_minimal()
+```
+
+```{r}
+one_fold <- ridge_predictions[[10]]
+ggplot(one_fold, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", size = 1, alpha = 0.8) +
+  geom_line(aes(y = predicted), color = "blue", size = 1, alpha = 0.7) +
+  labs(
+    title = "Ridge: Actual vs Predicted (Fold X)",
+    y = "Price", x = "Date"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+library(glmnet)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+# Drop rows with any missing values (only once)
+model_data <- data %>%
+  select(-date) %>%
+  drop_na()
+
+# Create model matrix and response
+X <- model.matrix(price ~ . - price, data = model_data)[, -1]
+y <- model_data$price
+
+# Scale predictors
+X_scaled <- scale(X)
+
+# Fit full Ridge model (alpha = 0)
+ridge_full <- cv.glmnet(X_scaled, y, alpha = 0, standardize = FALSE)
+
+# Extract non-zero coefficients
+coef_ridge <- coef(ridge_full, s = "lambda.min")
+
+important_features <- as.data.frame(as.matrix(coef_ridge)) %>%
+  rownames_to_column("feature") %>%
+  rename(coefficient = 2) %>%
+  filter(feature != "(Intercept)" & coefficient != 0)
+
+# Plot
+ggplot(important_features, aes(x = reorder(feature, coefficient), y = coefficient)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Ridge Feature Importances",
+    x = "Feature", y = "Coefficient"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(all_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(title = "Ridge Predictions (Expanding Window, 14-Day Horizon)", y = "Price", x = "Date", subtitle = "Black: Actual | Blue: Forecast") +
+  theme_minimal()
+```
+```{r}
+## Additional section to decide on lambda for test set
+library(ggplot2)
+ggplot(ridge_metrics, aes(fold, lambda)) +
+  geom_line() + geom_point(size = 0.6) +
+  labs(title = "Ridge λ by expanding-window fold", x = "Fold", y = "lambda")
+```
+```{r}
+# Extract last 12 folds
+lam_recent <- tail(ridge_metrics$lambda, 12)
+
+# Take median and mean
+lam_recent_median <- median(lam_recent, na.rm = TRUE)
+lam_recent_mean   <- mean(lam_recent, na.rm = TRUE)
+
+cat("Recent 12-fold λ median:", lam_recent_median, "\n")
+cat("Recent 12-fold λ mean:", lam_recent_mean, "\n")
+```
+
+# Elastic Net
+
+```{r}
+library(glmnet)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+
+initial   <- 365        # initial training window
+horizon   <- 14         # forecast horizon
+max_lag   <- 7          # how many price lags to include as features
+alpha_grid <- seq(0.01, 0.99, by = 0.01)
+
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+```
+
+```{r}
+data <- data %>%
+  select(-matches("^lag[0-9]+$"))
+```
+
+```{r}
+add_lags_split <- function(train_df, test_df, full_price, kmax) {
+  # train lags come from the train segment itself
+  for (k in 1:kmax) {
+    train_df[[paste0("lag", k)]] <- dplyr::lag(train_df$price, k)
+  }
+  # test lags come from the *global* series aligned to test indices (no peeking)
+  # this is equivalent to what was done earlier: lag(data$price, k)[test_idx]
+  # but attach as columns on test_df
+  idx_test <- match(test_df$date, data$date)
+  for (k in 1:kmax) {
+    test_df[[paste0("lag", k)]] <- dplyr::lag(full_price, k)[idx_test]
+  }
+  list(train = train_df, test = test_df)
+}
+```
+
+```{r}
+elasticnet_results <- list()
+
+set.seed(123)  # reproducible CV folds inside glmnet
+
+for (alpha_val in alpha_grid) {
+  metrics <- data.frame()
+  preds   <- list()
+
+  for (i in 0:(folds - 1)) {
+    start_idx <- 1
+    end_idx   <- initial + i * horizon
+    test_idx  <- (end_idx + 1):(end_idx + horizon)
+
+    train_df <- data[start_idx:end_idx, ]
+    test_df  <- data[test_idx, ]
+
+    # Add lags safely
+    lagged <- add_lags_split(train_df, test_df, full_price = data$price, kmax = max_lag)
+    train_df <- lagged$train
+    test_df  <- lagged$test
+
+    # Drop NA rows in *training only* (due to lags)
+    train_df <- train_df %>% filter(complete.cases(.))
+
+    # Model matrices (keep factors, drop date & price target)
+    X_train <- model.matrix(price ~ . - date - price, data = train_df)[, -1, drop = FALSE]
+    y_train <- train_df$price
+
+    X_test  <- model.matrix(price ~ . - date - price, data = test_df)[, -1, drop = FALSE]
+    y_test  <- test_df$price
+    test_dates <- test_df$date
+
+    # Scale using training stats only (no leakage)
+    tr_center <- attr(scale(X_train), "scaled:center")
+    tr_scale  <- attr(scale(X_train), "scaled:scale")
+    X_train   <- scale(X_train, center = tr_center, scale = tr_scale)
+    X_test    <- scale(X_test,  center = tr_center, scale = tr_scale)
+
+    # Cross-validated EN for this alpha (glmnet chooses lambda per fold)
+    cv_fit <- cv.glmnet(
+      x = X_train, y = y_train,
+      alpha = alpha_val,
+      standardize = FALSE  # already scaled
+    )
+
+    # Predict with that fold’s best lambda
+    y_pred <- as.numeric(predict(cv_fit, newx = X_test, s = "lambda.min"))
+
+    # Metrics
+    valid <- !is.na(y_test) & !is.na(y_pred)
+    mae  <- mean(abs(y_test[valid] - y_pred[valid]))
+    rmse <- sqrt(mean((y_test[valid] - y_pred[valid])^2))
+    mape <- mean(abs((y_test[valid] - y_pred[valid]) / y_test[valid])) * 100
+
+    metrics <- rbind(metrics, data.frame(
+      fold = i + 1, mae, rmse, mape,
+      lambda = cv_fit$lambda.min
+    ))
+
+    preds[[i + 1]] <- data.frame(
+      date = test_dates,
+      actual = y_test,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+
+  elasticnet_results[[as.character(alpha_val)]] <- list(
+    metrics = metrics,
+    predictions = bind_rows(preds)
+  )
+}
+```
+
+```{r}
+elasticnet_summary <- map_dfr(names(elasticnet_results), function(a) {
+  met <- elasticnet_results[[a]]$metrics
+  tibble(
+    alpha = as.numeric(a),
+    MAE   = mean(met$mae,  na.rm = TRUE),
+    RMSE  = mean(met$rmse, na.rm = TRUE),
+    MAPE  = mean(met$mape, na.rm = TRUE),
+    lambda_median_all    = median(met$lambda, na.rm = TRUE),
+    lambda_median_recent = median(tail(met$lambda, 12), na.rm = TRUE),
+    lambda_last          = dplyr::last(met$lambda)
+  )
+}) %>% arrange(RMSE)
+
+print(elasticnet_summary)
+
+# ---- Choose best alpha by RMSE; keep recent-12-fold lambda for pseudo-test ----
+best_row   <- elasticnet_summary %>% slice(1)
+best_alpha <- best_row$alpha
+lambda_recent_median <- best_row$lambda_median_recent
+
+cat("Best EN alpha:", best_alpha,
+    " | Recent-12-fold median lambda:", lambda_recent_median, "\n")
+```
+
+```{r}
+best_preds <- elasticnet_results[[as.character(best_alpha)]]$predictions
+```
+
+```{r}
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(
+    title = sprintf("Elastic Net (α = %.2f) — Expanding Window, 14-Day Horizon", best_alpha),
+    subtitle = "Black = Actual, Blue = Forecast",
+    y = "Price", x = "Date"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+subset_preds <- best_preds %>% filter(fold %% 10 == 1)
+ggplot(subset_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.6) +
+  geom_line(aes(y = predicted), color = "blue",  linewidth = 0.6) +
+  facet_wrap(~ fold, scales = "free") +
+  scale_x_date(date_labels = "%b %d", date_breaks = "7 days") +
+  labs(
+    title = sprintf("Elastic Net — Selected Folds (α = %.2f)", best_alpha),
+    y = "Price", x = "Date"
+  ) +
+  theme_minimal()
+```
+
+# Bagging
+
+```{r}
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+bagging_metrics <- data.frame()
+predictions_list <- list()
+
+for (i in 0:(folds - 1)) {
+  start_idx <- 1
+  end_idx <- initial + i * horizon
+  test_idx <- (end_idx + 1):(end_idx + horizon)
+  
+  # Define train/test splits
+  train_data <- data[start_idx:end_idx, ]
+  test_data <- data[test_idx, ]
+  
+  # Remove rows with NA only from training
+  train_data <- train_data[complete.cases(train_data), ]
+  
+  # Train Bagging model
+  set.seed(123)
+  bag_model <- randomForest(
+    price ~ . - date,
+    data = train_data,
+    mtry = ncol(train_data) - 2,  # Use all predictors
+    ntree = 1000
+  )
+  
+  # Predict
+  preds <- predict(bag_model, newdata = test_data)
+  
+  # Compute metrics (ignore NA in test price)
+  actuals <- test_data$price
+  valid_idx <- !is.na(actuals)
+  
+  mae <- mean(abs(actuals[valid_idx] - preds[valid_idx]))
+  rmse <- sqrt(mean((actuals[valid_idx] - preds[valid_idx])^2))
+  mape <- mean(abs((actuals[valid_idx] - preds[valid_idx]) / actuals[valid_idx])) * 100
+  
+  bagging_metrics <- rbind(bagging_metrics, data.frame(fold = i + 1, mae, rmse, mape))
+  
+  predictions_list[[i + 1]] <- data.frame(
+    date = test_data$date,
+    actual = actuals,
+    predicted = preds,
+    fold = i + 1
+  )
+}
+
+# Combine predictions and summarize
+bagging_preds <- bind_rows(predictions_list)
+bagging_summary <- bagging_metrics %>%
+  summarise(
+    model = "Bagging",
+    initial = initial,
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+
+print(bagging_summary)
+
+# Plot predictions
+ggplot(bagging_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted), color = "blue") +
+  labs(title = "Bagging Tree Predictions (Expanding Window)", y = "Price", x = "Date") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(bagging_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted), color = "blue") +
+  facet_wrap(~ fold, scales = "free_x") +
+  labs(title = "Bagging Predictions (Expanding Window)", x = "Date", y = "Price") +
+  theme_minimal()
+```
+
+```{r}
+# Whole chunk commented out for rendering. v2 with parallel computing more efficient 
+
+# hyperparameter tuning
+
+# library(randomForest)
+# library(dplyr)
+# library(purrr)
+# library(ggplot2)
+# 
+# # Parameters
+# initial <- 365
+# horizon <- 14
+# n_obs <- nrow(data)
+# folds <- floor((n_obs - initial) / horizon)
+# 
+# # Grid definitions
+# ntree_grid     <- c(300, 500, 1000, 2000)
+# nodesize_grid  <- c(1, 5, 10, 20)
+# maxnodes_grid  <- c(10, 20, 30, 50)
+# 
+# # Prepare combinations
+# param_grid <- expand.grid(
+#   ntree = ntree_grid,
+#   nodesize = nodesize_grid,
+#   maxnodes = maxnodes_grid
+# )
+# 
+# # Store results
+# bagging_grid_results <- list()
+# 
+# total <- nrow(param_grid)
+# pb <- txtProgressBar(min = 0, max = total, style = 3)
+# 
+# for (row in 1:nrow(param_grid)) {
+#   p <- param_grid[row, ]
+#   metrics <- data.frame()
+#   preds <- list()
+#   
+#   for (i in 0:(folds - 1)) {
+#     start_idx <- 1
+#     end_idx <- initial + i * horizon
+#     test_idx <- (end_idx + 1):(end_idx + horizon)
+#     
+#     train_data <- data[start_idx:end_idx, ] %>%
+#       filter(complete.cases(.))
+#     test_data <- data[test_idx, ]
+#     
+#     # Train model with parameters from grid
+#     set.seed(123)
+#     model <- randomForest(
+#       price ~ . - date,
+#       data = train_data,
+#       mtry = ncol(train_data) - 2,
+#       ntree = p$ntree,
+#       nodesize = p$nodesize,
+#       maxnodes = p$maxnodes
+#     )
+#     
+#     # Predict
+#     y_pred <- predict(model, newdata = test_data)
+#     actuals <- test_data$price
+#     valid <- !is.na(actuals)
+#     
+#     # Metrics
+#     mae <- mean(abs(actuals[valid] - y_pred[valid]))
+#     rmse <- sqrt(mean((actuals[valid] - y_pred[valid])^2))
+#     mape <- mean(abs((actuals[valid] - y_pred[valid]) / actuals[valid])) * 100
+#     
+#     metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+#     
+#     preds[[i + 1]] <- data.frame(
+#       date = test_data$date,
+#       actual = actuals,
+#       predicted = y_pred,
+#       fold = i + 1
+#     )
+#   }
+#   
+#   id <- paste("ntree", p$ntree, "ns", p$nodesize, "mn", p$maxnodes, sep = "_")
+#   bagging_grid_results[[id]] <- list(
+#     params = p,
+#     metrics = metrics,
+#     predictions = bind_rows(preds)
+#   )
+#   setTxtProgressBar(pb, row)
+# }
+# close(pb)
+```
+
+```{r}
+# v2- with parallel processing
+library(randomForest)
+library(dplyr)
+library(parallel)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Hyperparameter grids (reduce if needed for speed)
+ntree_grid     <- c(300, 500, 1000, 2000)
+nodesize_grid  <- c(1, 5, 10, 20)
+maxnodes_grid  <- c(10, 20, 30, 50)
+
+param_grid <- expand.grid(
+  ntree = ntree_grid,
+  nodesize = nodesize_grid,
+  maxnodes = maxnodes_grid
+)
+
+# Prepare cluster
+n_cores <- detectCores() - 1
+cl <- makeCluster(n_cores)
+
+# Export required data and libraries to each worker
+clusterExport(cl, varlist = c("data", "initial", "horizon", "folds", "param_grid"))
+clusterEvalQ(cl, {
+  library(randomForest)
+  library(dplyr)
+})
+
+# Define the function for each grid row
+grid_results <- parLapply(cl, 1:nrow(param_grid), function(row) {
+  p <- param_grid[row, ]
+  metrics <- data.frame()
+  preds <- list()
+  
+  for (i in 0:(folds - 1)) {
+    start_idx <- 1
+    end_idx <- initial + i * horizon
+    test_idx <- (end_idx + 1):(end_idx + horizon)
+    
+    train_data <- data[start_idx:end_idx, ] %>%
+      filter(complete.cases(.))
+    test_data <- data[test_idx, ]
+    
+    set.seed(123)
+    
+    model <- randomForest(
+      price ~ . - date,
+      data = train_data,
+      mtry = ncol(train_data) - 2,
+      ntree = p$ntree,
+      nodesize = p$nodesize,
+      maxnodes = p$maxnodes
+    )
+    
+    y_pred <- predict(model, newdata = test_data)
+    actuals <- test_data$price
+    valid <- !is.na(actuals)
+    
+    mae <- mean(abs(actuals[valid] - y_pred[valid]))
+    rmse <- sqrt(mean((actuals[valid] - y_pred[valid])^2))
+    mape <- mean(abs((actuals[valid] - y_pred[valid]) / actuals[valid])) * 100
+    
+    metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+    
+    preds[[i + 1]] <- data.frame(
+      date = test_data$date,
+      actual = actuals,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+  
+  id <- paste("ntree", p$ntree, "ns", p$nodesize, "mn", p$maxnodes, sep = "_")
+  list(id = id, params = p, metrics = metrics, predictions = bind_rows(preds))
+})
+
+# Stop cluster
+stopCluster(cl)
+
+# Organize results into named list
+bagging_grid_results <- setNames(lapply(grid_results, function(res) {
+  list(params = res$params,
+       metrics = res$metrics,
+       predictions = res$predictions)
+}), sapply(grid_results, function(res) res$id))
+
+```
+
+```{r}
+library(purrr)
+library(dplyr)
+
+bagging_grid_summary <- map_df(names(bagging_grid_results), function(id) {
+  res <- bagging_grid_results[[id]]
+  avg <- summarise(res$metrics,
+                   MAE  = mean(mae),
+                   RMSE = mean(rmse),
+                   MAPE = mean(mape))
+  cbind(res$params, avg)
+})
+
+print(bagging_grid_summary)
+```
+
+```{r}
+best_params <- bagging_grid_summary %>%
+  filter(RMSE == min(RMSE)) %>%
+  slice(1)
+
+best_id <- paste("ntree", best_params$ntree,
+                 "ns", best_params$nodesize,
+                 "mn", best_params$maxnodes, sep = "_")
+
+best_preds <- bagging_grid_results[[best_id]]$predictions
+
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(
+    title = paste0("Best Bagging Model (ntree=", best_params$ntree,
+                   ", nodesize=", best_params$nodesize,
+                   ", maxnodes=", best_params$maxnodes, ") - Expanding Window, 14-Day Horizon"),
+    x = "Date", y = "Price", subtitle = "Black: Actual | Blue: Forecast"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted), color = "blue") +
+  facet_wrap(~ fold, scales = "free_x") +
+  labs(
+    title = paste0("Bagging Predictions by Fold (ntree=", best_params$ntree,
+                   ", nodesize=", best_params$nodesize,
+                   ", maxnodes=", best_params$maxnodes, ")"),
+    x = "Date", y = "Price"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+best_params 
+```
+
+# Random Forest
+
+```{r}
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Tune this later
+ntree <- 500
+mtry <- floor((ncol(data) - 2) / 3)  # Try 1/3 of predictors as a common RF default
+
+rf_metrics <- data.frame()
+rf_predictions <- list()
+
+for (i in 0:(folds - 1)) {
+  start_idx <- 1
+  end_idx <- initial + i * horizon
+  test_idx <- (end_idx + 1):(end_idx + horizon)
+
+  train_data <- data[start_idx:end_idx, ] %>%
+    filter(complete.cases(.))
+  test_data <- data[test_idx, ]
+  
+  set.seed(123)
+  rf_model <- randomForest(
+    price ~ . - date,
+    data = train_data,
+    mtry = mtry,
+    ntree = ntree
+  )
+
+  preds <- predict(rf_model, newdata = test_data)
+  actuals <- test_data$price
+  valid <- !is.na(actuals)
+
+  mae <- mean(abs(actuals[valid] - preds[valid]))
+  rmse <- sqrt(mean((actuals[valid] - preds[valid])^2))
+  mape <- mean(abs((actuals[valid] - preds[valid]) / actuals[valid])) * 100
+
+  rf_metrics <- rbind(rf_metrics, data.frame(fold = i + 1, mae, rmse, mape))
+  
+  rf_predictions[[i + 1]] <- data.frame(
+    date = test_data$date,
+    actual = actuals,
+    predicted = preds,
+    fold = i + 1
+  )
+}
+
+# Summarize results
+rf_summary <- rf_metrics %>%
+  summarise(
+    model = "Random Forest",
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+print(rf_summary)
+
+rf_preds_combined <- bind_rows(rf_predictions)
+    
+```
+
+```{r}
+ggplot(rf_preds_combined, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted), color = "blue") +
+  labs(title = "Random Forest Predictions (Expanding Window)", x = "Date", y = "Price") +
+  theme_minimal()
+```
+
+```{r}
+# Whole chunk commented out for rendering. v2 with parallel computing more efficient 
+
+# # Hyperparameter tuning
+# library(randomForest)
+# library(dplyr)
+# library(purrr)
+# library(ggplot2)
+# 
+# # Parameters
+# initial <- 365
+# horizon <- 14
+# n_obs <- nrow(data)
+# folds <- floor((n_obs - initial) / horizon)
+# 
+# # Grids
+# ntree_grid    <- c(100, 300, 500, 1000)
+# mtry_grid     <- c(3, 5, 7, 10)
+# nodesize_grid <- c(1, 5, 10, 20)
+# 
+# param_grid <- expand.grid(
+#   ntree = ntree_grid,
+#   mtry = mtry_grid,
+#   nodesize = nodesize_grid
+# )
+# 
+# # Store results
+# rf_grid_results <- list()
+# 
+# for (row in 1:nrow(param_grid)) {
+#   p <- param_grid[row, ]
+#   metrics <- data.frame()
+#   preds <- list()
+# 
+#   for (i in 0:(folds - 1)) {
+#     start_idx <- 1
+#     end_idx <- initial + i * horizon
+#     test_idx <- (end_idx + 1):(end_idx + horizon)
+# 
+#     train_data <- data[start_idx:end_idx, ] %>%
+#       filter(complete.cases(.))
+#     test_data <- data[test_idx, ]
+# 
+#     # Train model
+#     set.seed(123)
+#     rf_model <- randomForest(
+#       price ~ . - date,
+#       data = train_data,
+#       ntree = p$ntree,
+#       mtry = p$mtry,
+#       nodesize = p$nodesize
+#     )
+# 
+#     # Predict
+#     y_pred <- predict(rf_model, newdata = test_data)
+#     actuals <- test_data$price
+#     valid <- !is.na(actuals)
+# 
+#     # Metrics
+#     mae  <- mean(abs(actuals[valid] - y_pred[valid]))
+#     rmse <- sqrt(mean((actuals[valid] - y_pred[valid])^2))
+#     mape <- mean(abs((actuals[valid] - y_pred[valid]) / actuals[valid])) * 100
+# 
+#     metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+# 
+#     preds[[i + 1]] <- data.frame(
+#       date = test_data$date,
+#       actual = actuals,
+#       predicted = y_pred,
+#       fold = i + 1
+#     )
+#   }
+# 
+#   id <- paste("ntree", p$ntree, "mtry", p$mtry, "ns", p$nodesize, sep = "_")
+#   rf_grid_results[[id]] <- list(
+#     params = p,
+#     metrics = metrics,
+#     predictions = bind_rows(preds)
+#   )
+# }
+```
+
+```{r}
+# v2 - with parallel processing   
+library(randomForest)
+library(dplyr)
+library(foreach)
+library(doParallel)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Grid setup
+ntree_grid    <- c(100, 300, 500, 1000)
+mtry_grid     <- c(3, 5, 7, 10)
+nodesize_grid <- c(1, 5, 10, 20)
+
+param_grid <- expand.grid(
+  ntree = ntree_grid,
+  mtry = mtry_grid,
+  nodesize = nodesize_grid
+)
+
+# Parallel setup
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Run grid search in parallel
+rf_grid_results <- foreach(row = 1:nrow(param_grid), .packages = c("dplyr", "randomForest")) %dopar% {
+  p <- param_grid[row, ]
+  metrics <- data.frame()
+  preds <- list()
+
+  for (i in 0:(folds - 1)) {
+    start_idx <- 1
+    end_idx <- initial + i * horizon
+    test_idx <- (end_idx + 1):(end_idx + horizon)
+
+    train_data <- data[start_idx:end_idx, ] %>%
+      filter(complete.cases(.))
+    test_data <- data[test_idx, ]
+    
+    set.seed(123)
+
+    rf_model <- randomForest(
+      price ~ . - date,
+      data = train_data,
+      ntree = p$ntree,
+      mtry = p$mtry,
+      nodesize = p$nodesize
+    )
+
+    y_pred <- predict(rf_model, newdata = test_data)
+    actuals <- test_data$price
+    valid <- !is.na(actuals)
+
+    mae  <- mean(abs(actuals[valid] - y_pred[valid]))
+    rmse <- sqrt(mean((actuals[valid] - y_pred[valid])^2))
+    mape <- mean(abs((actuals[valid] - y_pred[valid]) / actuals[valid])) * 100
+
+    metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+
+    preds[[i + 1]] <- data.frame(
+      date = test_data$date,
+      actual = actuals,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+
+  id <- paste("ntree", p$ntree, "mtry", p$mtry, "ns", p$nodesize, sep = "_")
+  list(id = id, params = p, metrics = metrics, predictions = bind_rows(preds))
+}
+
+# Shutdown
+stopCluster(cl)
+
+# Format results
+rf_results_list <- setNames(
+  lapply(rf_grid_results, function(x) x[c("params", "metrics", "predictions")]),
+  sapply(rf_grid_results, function(x) x$id)
+)
+```
+
+```{r}
+library(purrr)
+rf_grid_summary <- map_df(names(rf_results_list), function(id) {
+  res <- rf_results_list[[id]]
+  avg <- summarise(res$metrics,
+                   MAE = mean(mae),
+                   RMSE = mean(rmse),
+                   MAPE = mean(mape))
+  cbind(res$params, avg)
+})
+
+print(rf_grid_summary)
+```
+
+```{r}
+library(ggplot2)
+library(purrr)
+library(dplyr)
+best_params <- rf_grid_summary %>%
+  filter(RMSE == min(RMSE)) %>%
+  slice(1)
+
+best_id <- paste("ntree", best_params$ntree,
+                 "mtry", best_params$mtry,
+                 "ns", best_params$nodesize, sep = "_")
+
+rf_best_preds <- rf_results_list[[best_id]]$predictions
+
+ggplot(rf_best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted), color = "blue") +
+  labs(
+    title = paste0("Best RF Model (ntree=", best_params$ntree,
+                   ", mtry=", best_params$mtry,
+                   ", nodesize=", best_params$nodesize, ")"),
+    x = "Date", y = "Price"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(rf_best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black") +
+  geom_line(aes(y = predicted), color = "blue") +
+  facet_wrap(~ fold, scales = "free_x") +
+  labs(
+    title = paste0("Random Forest Predictions by Fold\n(ntree = ", best_params$ntree,
+                   ", mtry = ", best_params$mtry,
+                   ", nodesize = ", best_params$nodesize, ")"),
+    x = "Date", y = "Price"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+best_params
+```
+
+# Gradient Boosting
+
+```{r}
+library(gbm)
+library(dplyr)
+library(foreach)
+library(doParallel)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Hyperparameter grid
+n.trees_grid       <- c(300, 500, 1000, 2000)
+interaction_grid   <- c(3, 5, 10, 20) #depth of tree
+shrinkage_grid     <- c(0.01, 0.025, 0.05, 0.075) # learning rate
+
+param_grid <- expand.grid(
+  n.trees = n.trees_grid,
+  interaction.depth = interaction_grid,
+  shrinkage = shrinkage_grid
+)
+```
+
+```{r}
+# Parallel setup
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Run grid search in parallel
+gbm_grid_results <- foreach(row = 1:nrow(param_grid), .packages = c("dplyr", "gbm")) %dopar% {
+  p <- param_grid[row, ]
+  metrics <- data.frame()
+  preds <- list()
+
+  for (i in 0:(folds - 1)) {
+    start_idx <- 1
+    end_idx <- initial + i * horizon
+    test_idx <- (end_idx + 1):(end_idx + horizon)
+
+    train_data <- data[start_idx:end_idx, ] %>%
+      filter(complete.cases(.))
+    test_data <- data[test_idx, ]
+
+    # Train GBM model
+    set.seed(123)
+    gbm_model <- gbm(
+      formula = price ~ . - date,
+      data = train_data,
+      distribution = "gaussian",
+      n.trees = p$n.trees,
+      interaction.depth = p$interaction.depth,
+      shrinkage = p$shrinkage,
+      n.minobsinnode = 10,
+      verbose = FALSE
+    )
+
+    # Predict
+    y_pred <- predict(gbm_model, newdata = test_data, n.trees = p$n.trees)
+    actuals <- test_data$price
+    valid <- !is.na(actuals)
+
+    # Metrics
+    mae  <- mean(abs(actuals[valid] - y_pred[valid]))
+    rmse <- sqrt(mean((actuals[valid] - y_pred[valid])^2))
+    mape <- mean(abs((actuals[valid] - y_pred[valid]) / actuals[valid])) * 100
+
+    metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+
+    preds[[i + 1]] <- data.frame(
+      date = test_data$date,
+      actual = actuals,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+
+  id <- paste("trees", p$n.trees, "depth", p$interaction.depth, "eta", p$shrinkage, sep = "_")
+  list(id = id, params = p, metrics = metrics, predictions = bind_rows(preds))
+}
+
+# Shutdown cluster
+stopCluster(cl)
+
+# Format results as named list
+gbm_results_list <- setNames(
+  lapply(gbm_grid_results, function(x) x[c("params", "metrics", "predictions")]),
+  sapply(gbm_grid_results, function(x) x$id)
+)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Choose the best config manually or programmatically
+best_id <- names(gbm_results_list)[[which.min(sapply(gbm_results_list, function(x) mean(x$metrics$rmse)))]]
+best_preds <- gbm_results_list[[best_id]]$predictions
+
+# Filter: every 10th fold
+subset_preds <- best_preds %>% filter(fold %% 10 == 1)
+
+# Plot
+ggplot(subset_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  facet_wrap(~ fold, scales = "free") +
+  scale_x_date(date_labels = "%b %d", date_breaks = "7 days") +
+  labs(title = paste("Gradient Boosting — Selected Folds (14-Day Horizon)\nModel:", best_id),
+       y = "Price", x = "Date") +
+  theme_minimal()
+
+best_metrics <- gbm_results_list[[best_id]]$metrics
+
+best_summary <- best_metrics %>%
+  summarise(
+    MAE = mean(mae),
+    RMSE = mean(rmse),
+    MAPE = mean(mape)
+  )
+
+print(best_id)
+print(best_summary)
+```
+
+```{r}
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(title = paste("Gradient Boosting Predictions — Shared Timeline\nModel:", best_id),
+       x = "Date", y = "Price", , subtitle = "Black: Actual | Blue: Forecast")+
+  theme_minimal()
+```
+
+# XGBoost
+
+```{r}
+library(xgboost)
+library(dplyr)
+library(foreach)
+library(doParallel)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Grid
+nrounds_grid   <- c(100, 300, 500)
+max_depth_grid <- c(2, 4, 6)
+eta_grid       <- c(0.01, 0.05, 0.1)
+
+param_grid <- expand.grid(
+  nrounds = nrounds_grid,
+  max_depth = max_depth_grid,
+  eta = eta_grid
+)
+```
+
+```{r}
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Run grid search in parallel
+xgb_grid_results <- foreach(row = 1:nrow(param_grid), .packages = c("dplyr", "xgboost")) %dopar% {
+  p <- param_grid[row, ]
+  metrics <- data.frame()
+  preds <- list()
+
+  for (i in 0:(folds - 1)) {
+    start_idx <- 1
+    end_idx <- initial + i * horizon
+    test_idx <- (end_idx + 1):(end_idx + horizon)
+
+    train_data <- data[start_idx:end_idx, ] %>%
+      filter(complete.cases(.))
+    test_data <- data[test_idx, ]
+
+    # Create matrix for xgboost
+    X_train <- model.matrix(price ~ . - date, data = train_data)[, -1]
+    y_train <- train_data$price
+
+    X_test <- model.matrix(price ~ . - date, data = test_data)[, -1]
+    y_test <- test_data$price
+
+    dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+    dtest  <- xgb.DMatrix(data = X_test)
+
+    # Train model
+    set.seed(123)
+    xgb_model <- xgboost(
+      data = dtrain,
+      nrounds = p$nrounds,
+      max_depth = p$max_depth,
+      eta = p$eta,
+      objective = "reg:squarederror",
+      verbose = 0
+    )
+
+    # Predict
+    y_pred <- predict(xgb_model, dtest)
+    valid <- !is.na(y_test)
+
+    # Metrics
+    mae  <- mean(abs(y_test[valid] - y_pred[valid]))
+    rmse <- sqrt(mean((y_test[valid] - y_pred[valid])^2))
+    mape <- mean(abs((y_test[valid] - y_pred[valid]) / y_test[valid])) * 100
+
+    metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+
+    preds[[i + 1]] <- data.frame(
+      date = test_data$date,
+      actual = y_test,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+
+  id <- paste("nrounds", p$nrounds, "depth", p$max_depth, "eta", p$eta, sep = "_")
+  list(id = id, params = p, metrics = metrics, predictions = bind_rows(preds))
+}
+
+# Shutdown parallel back-end
+stopCluster(cl)
+
+# Format results
+xgb_results_list <- setNames(
+  lapply(xgb_grid_results, function(x) x[c("params", "metrics", "predictions")]),
+  sapply(xgb_grid_results, function(x) x$id)
+)
+```
+
+```{r}
+# Compute mean RMSE for each model config
+library(purrr)
+
+xgb_summary <- map_df(names(xgb_results_list), function(id) {
+  res <- xgb_results_list[[id]]
+  data.frame(
+    id = id,
+    rmse = mean(res$metrics$rmse),
+    mae  = mean(res$metrics$mae),
+    mape = mean(res$metrics$mape),
+    nrounds = res$params$nrounds,
+    max_depth = res$params$max_depth,
+    eta = res$params$eta
+  )
+})
+best_xgb <- xgb_summary[order(xgb_summary$rmse), ][1, ]
+print(best_xgb)
+
+```
+
+```{r}
+library(ggplot2)
+
+best_id <- best_xgb$id
+best_preds <- xgb_results_list[[best_id]]$predictions
+subset_preds <- best_preds %>% filter(fold %% 10 == 1)
+
+ggplot(subset_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  facet_wrap(~ fold, scales = "free") +
+  scale_x_date(date_labels = "%b %d", date_breaks = "7 days") +
+  labs(title = paste("XGBoost — Selected Folds (14-Day Horizon)\nModel:", best_id),
+       y = "Price", x = "Date") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(title = paste("XGBoost Predictions — Shared Timeline\nModel:", best_id),
+       x = "Date", y = "Price") +
+  theme_minimal()
+```
+
+# SVR
+
+```{r}
+library(e1071)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(ggplot2)
+library(Metrics)
+
+# Setup
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Define hyperparameter grid
+cost_grid    <- c(1, 10, 100, 200, 500)
+gamma_grid   <- c(0.0001, 0.001, 0.005, 0.01, 0.05)
+epsilon_grid <- c(0.05, 0.1, 0.15, 0.2)
+
+param_grid <- expand.grid(
+  cost = cost_grid,
+  gamma = gamma_grid,
+  epsilon = epsilon_grid
+)
+```
+
+```{r}
+# Parallel setup
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Run grid search
+svr_grid_results <- foreach(row = 1:nrow(param_grid), .packages = c("e1071", "dplyr", "Metrics")) %dopar% {
+  p <- param_grid[row, ]
+  metrics <- data.frame()
+  preds <- list()
+
+  for (i in 0:(folds - 1)) {
+    train_index <- 1:(initial + i * horizon)
+    test_index <- (max(train_index) + 1):(max(train_index) + horizon)
+
+    train_data <- data[train_index, ] %>% filter(complete.cases(.))
+    test_data <- data[test_index, ]
+
+    set.seed(123)
+    svr_model <- svm(
+      price ~ . - date,
+      data = train_data,
+      kernel = "radial",
+      cost = p$cost,
+      gamma = p$gamma,
+      epsilon = p$epsilon
+    )
+
+    y_pred <- predict(svr_model, newdata = test_data)
+    actuals <- test_data$price
+    valid <- !is.na(actuals)
+
+    metrics <- rbind(metrics, data.frame(
+      fold = i + 1,
+      mae = mae(actuals[valid], y_pred[valid]),
+      rmse = rmse(actuals[valid], y_pred[valid]),
+      mape = mape(actuals[valid], y_pred[valid]) * 100
+    ))
+
+    preds[[i + 1]] <- data.frame(
+      date = test_data$date,
+      actual = actuals,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+
+  id <- paste("cost", p$cost, "gamma", p$gamma, "eps", p$epsilon, sep = "_")
+  list(id = id, params = p, metrics = metrics, predictions = bind_rows(preds))
+}
+
+# Stop cluster
+stopCluster(cl)
+
+# Format results
+svr_results_list <- setNames(
+  lapply(svr_grid_results, function(x) x[c("params", "metrics", "predictions")]),
+  sapply(svr_grid_results, function(x) x$id)
+)
+```
+
+```{r}
+# Summary table
+svr_grid_summary <- purrr::map_df(names(svr_results_list), function(id) {
+  res <- svr_results_list[[id]]
+  avg <- summarise(res$metrics,
+                   MAE = mean(mae),
+                   RMSE = mean(rmse),
+                   MAPE = mean(mape))
+  cbind(res$params, avg)
+})
+
+# Select best
+best_id <- names(svr_results_list)[which.min(sapply(svr_results_list, function(x) mean(x$metrics$rmse)))]
+best_preds <- svr_results_list[[best_id]]$predictions
+
+# View full summary
+print(svr_grid_summary)
+cat("Best model:", best_id, "\n")
+
+# Extract best model's parameters
+best_params <- svr_results_list[[best_id]]$params
+
+# Filter summary using the actual parameter values
+best_metrics <- svr_grid_summary %>%
+  filter(cost == best_params$cost,
+         gamma == best_params$gamma,
+         epsilon == best_params$epsilon)
+
+# Print
+print(best_metrics[, c("MAE", "RMSE", "MAPE")])
+```
+
+```{r}
+# Plot selected folds
+subset_preds <- best_preds %>% filter(fold %% 10 == 1)
+
+ggplot(subset_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  facet_wrap(~ fold, scales = "free") +
+  labs(title = paste("SVR — Selected Folds (14-Day Horizon)\nModel:", best_id),
+       y = "Price", x = "Date") +
+  theme_minimal()
+
+```
+
+```{r}
+# Shared timeline plot — SVR
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(
+    title = paste("SVR Predictions — Shared Timeline\nModel:", best_id),
+    x = "Date", y = "Price"
+  ) +
+  theme_minimal()
+
+```
+
+# KNN Regression
+
+```{r}
+library(FNN)
+library(dplyr)
+library(doParallel)
+library(foreach)
+library(Metrics)
+library(ggplot2)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Grid
+k_grid <- c(3, 5, 7, 10, 15)
+```
+
+```{r}
+# Parallel setup
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Run grid search
+knn_grid_results <- foreach(k = k_grid, .packages = c("FNN", "dplyr", "Metrics")) %dopar% {
+  metrics <- data.frame()
+  preds <- list()
+  
+  for (i in 0:(folds - 1)) {
+    train_idx <- 1:(initial + i * horizon)
+    test_idx <- (max(train_idx) + 1):(max(train_idx) + horizon)
+    
+    train_data <- data[train_idx, ] %>% filter(complete.cases(.))
+    test_data <- data[test_idx, ]
+    
+    X_train <- model.matrix(price ~ . - date, data = train_data)[, -1]
+    y_train <- train_data$price
+    X_test  <- model.matrix(price ~ . - date, data = test_data)[, -1]
+    y_test  <- test_data$price
+
+    set.seed(123)
+    y_pred <- knn.reg(train = X_train, test = X_test, y = y_train, k = k)$pred
+    valid <- !is.na(y_test)
+    
+    metrics <- rbind(metrics, data.frame(
+      fold = i + 1,
+      mae = mae(y_test[valid], y_pred[valid]),
+      rmse = rmse(y_test[valid], y_pred[valid]),
+      mape = mape(y_test[valid], y_pred[valid]) * 100
+    ))
+    
+    preds[[i + 1]] <- data.frame(
+      date = test_data$date,
+      actual = y_test,
+      predicted = y_pred,
+      fold = i + 1
+    )
+  }
+  
+  list(k = k, metrics = metrics, predictions = bind_rows(preds))
+}
+
+stopCluster(cl)
+
+# Format results
+knn_results_list <- setNames(
+  lapply(knn_grid_results, function(x) x[c("metrics", "predictions")]),
+  sapply(knn_grid_results, function(x) paste0("k=", x$k))
+)
+```
+
+```{r}
+# Summary table
+knn_summary <- purrr::map_df(names(knn_results_list), function(id) {
+  res <- knn_results_list[[id]]
+  avg <- summarise(res$metrics,
+                   MAE = mean(mae),
+                   RMSE = mean(rmse),
+                   MAPE = mean(mape))
+  cbind(k = gsub("k=", "", id), avg)
+})
+
+print(knn_summary)
+
+# Best model
+best_id <- names(knn_results_list)[which.min(sapply(knn_results_list, function(x) mean(x$metrics$rmse)))]
+best_preds <- knn_results_list[[best_id]]$predictions
+```
+
+```{r}
+# Shared timeline plot
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual), color = "black", linewidth = 0.4) +
+  geom_line(aes(y = predicted), color = "blue", linewidth = 0.3, alpha = 0.5) +
+  labs(title = paste("KNN Predictions — Shared Timeline\n", best_id),
+       x = "Date", y = "Price") +
+  theme_minimal()
+```
+
+# MARS
+
+```{r}
+library(earth)         # MARS modeling
+library(doParallel)    # Parallel back-end
+library(foreach)
+library(dplyr)
+
+# Parameters
+initial <- 365
+horizon <- 14
+n_obs <- nrow(data)
+folds <- floor((n_obs - initial) / horizon)
+
+# Hyperparameter grid
+degree_grid <- c(1, 2, 3, 4)
+nk_grid     <- c(10, 20, 30, 50)
+param_grid <- expand.grid(degree = degree_grid, nk = nk_grid)
+
+```
+
+```{r}
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+doParallel::registerDoParallel(cl)
+
+mars_grid_results <- foreach(row = 1:nrow(param_grid), .packages = c("earth", "dplyr")) %dopar% {
+  p <- param_grid[row, ]
+  metrics <- data.frame()
+  preds <- list()
+
+  for (i in 0:(folds - 1)) {
+    start_idx <- 1
+    end_idx   <- initial + i * horizon
+    test_idx  <- (end_idx + 1):(end_idx + horizon)
+
+    train_data <- data[start_idx:end_idx, ] %>% filter(complete.cases(.))
+    test_data  <- data[test_idx, ]
+
+    set.seed(123)
+    mars_model <- earth(
+      price ~ . - date,
+      data   = train_data,
+      degree = p$degree,
+      nk     = p$nk
+    )
+
+    y_pred  <- predict(mars_model, newdata = test_data)
+    actuals <- test_data$price
+    valid   <- !is.na(actuals)
+
+    mae  <- mean(abs(actuals[valid] - y_pred[valid]))
+    rmse <- sqrt(mean((actuals[valid] - y_pred[valid])^2))
+    mape <- mean(abs((actuals[valid] - y_pred[valid]) / actuals[valid])) * 100
+
+    metrics <- rbind(metrics, data.frame(fold = i + 1, mae, rmse, mape))
+
+    preds[[i + 1]] <- data.frame(
+      date      = test_data$date,
+      actual    = actuals,
+      predicted = y_pred,
+      fold      = i + 1
+    )
+  }
+
+  id <- paste("deg", p$degree, "nk", p$nk, sep = "_")
+  list(id = id, params = p, metrics = metrics, predictions = dplyr::bind_rows(preds))
+}
+
+stopCluster(cl)
+
+mars_results_list <- setNames(
+  lapply(mars_grid_results, function(x) x[c("params", "metrics", "predictions")]),
+  sapply(mars_grid_results, function(x) x$id)
+)
+```
+
+```{r}
+# Build summary
+# Safely extract metrics
+mars_summary <- purrr::map_dfr(mars_results_list, function(x) {
+  if (!is.null(x$params) && !is.null(x$metrics) && nrow(x$metrics) > 0) {
+    tibble::tibble(
+      degree = x$params$degree,
+      nk     = x$params$nk,
+      MAE    = mean(x$metrics$mae),
+      RMSE   = mean(x$metrics$rmse),
+      MAPE   = mean(x$metrics$mape)
+    )
+  } else {
+    NULL
+  }
+})
+
+print(mars_summary)
+
+if (nrow(mars_summary) > 0) {
+  # safer: no namespace clash
+  best_mars <- dplyr::slice_min(mars_summary, order_by = RMSE, n = 1, with_ties = FALSE)
+  print(best_mars)
+} else {
+  cat("No valid MARS results found.\n")
+}
+
+# alternative base R fallback
+best_mars <- mars_summary[which.min(mars_summary$RMSE), , drop = FALSE]
+print(best_mars)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+stopifnot(nrow(mars_summary) > 0)
+
+# Choose best row without using slice()
+best_row <- dplyr::slice_min(mars_summary, order_by = RMSE, n = 1, with_ties = FALSE)
+best_id  <- paste0("deg_", best_row$degree, "_nk_", best_row$nk)
+
+# Fallback if name mismatch
+if (!best_id %in% names(mars_results_list)) {
+  best_id <- names(mars_results_list)[
+    which.min(sapply(mars_results_list, function(x) mean(x$metrics$rmse)))
+  ]
+}
+
+best_preds <- mars_results_list[[best_id]]$predictions
+if (is.null(best_preds) || nrow(best_preds) == 0) {
+  stop("No predictions available for best_id = ", best_id)
+}
+
+# ---- normalize column names ----
+nm <- names(best_preds)
+
+# predicted: accept common variants
+if (!"predicted" %in% nm) {
+  cand <- intersect(c("price", "y_pred", "prediction", "pred"), nm)
+  if (length(cand)) best_preds <- dplyr::rename(best_preds, predicted = !!sym(cand[1]))
+}
+
+# actual: accept 'actuals'
+if (!"actual" %in% names(best_preds) && "actuals" %in% names(best_preds)) {
+  best_preds <- dplyr::rename(best_preds, actual = actuals)
+}
+
+# date to Date
+if (!inherits(best_preds$date, "Date")) best_preds$date <- as.Date(best_preds$date)
+
+# sanity checks
+stopifnot(all(c("date","actual","predicted") %in% names(best_preds)))
+
+# subset some folds if fold exists; otherwise plot all without facets
+if ("fold" %in% names(best_preds)) {
+  subset_preds <- dplyr::filter(best_preds, fold %% 10 == 1)
+  if (nrow(subset_preds) == 0) subset_preds <- best_preds
+
+  p <- ggplot(subset_preds, aes(x = date)) +
+    geom_line(aes(y = actual), linewidth = 0.4) +
+    geom_line(aes(y = predicted), linewidth = 0.3, alpha = 0.5) +
+    facet_wrap(~ fold, scales = "free") +
+    scale_x_date(date_labels = "%b %d", date_breaks = "7 days") +
+    labs(
+      title = paste("MARS — Selected Folds (14-Day Horizon)\nModel:", best_id),
+      y = "Price", x = "Date"
+    ) +
+    theme_minimal()
+} else {
+  p <- ggplot(best_preds, aes(x = date)) +
+    geom_line(aes(y = actual), linewidth = 0.4) +
+    geom_line(aes(y = predicted), linewidth = 0.3, alpha = 0.5) +
+    labs(
+      title = paste("MARS — Predictions (no fold column)\nModel:", best_id),
+      y = "Price", x = "Date"
+    ) +
+    theme_minimal()
+}
+p
+```
+
+```{r}
+# reuse best_id if available; otherwise recompute robustly
+if (!exists("best_id")) {
+  stopifnot(nrow(mars_summary) > 0)
+  best_row <- dplyr::slice_min(mars_summary, order_by = RMSE, n = 1, with_ties = FALSE)
+  best_id  <- paste0("deg_", best_row$degree, "_nk_", best_row$nk)
+  if (!best_id %in% names(mars_results_list)) {
+    best_id <- names(mars_results_list)[
+      which.min(sapply(mars_results_list, function(x) mean(x$metrics$rmse)))
+    ]
+  }
+}
+
+best_preds <- mars_results_list[[best_id]]$predictions
+if (is.null(best_preds) || nrow(best_preds) == 0) {
+  stop("No predictions available for best_id = ", best_id)
+}
+
+# normalize columns
+nm <- names(best_preds)
+if (!"predicted" %in% nm) {
+  cand <- intersect(c("price", "y_pred", "prediction", "pred"), nm)
+  if (length(cand)) best_preds <- dplyr::rename(best_preds, predicted = !!sym(cand[1]))
+}
+if (!"actual" %in% names(best_preds) && "actuals" %in% names(best_preds)) {
+  best_preds <- dplyr::rename(best_preds, actual = actuals)
+}
+if (!inherits(best_preds$date, "Date")) best_preds$date <- as.Date(best_preds$date)
+
+stopifnot(all(c("date","actual","predicted") %in% names(best_preds)))
+
+ggplot(best_preds, aes(x = date)) +
+  geom_line(aes(y = actual),   linewidth = 0.4) +
+  geom_line(aes(y = predicted), linewidth = 0.3, alpha = 0.5) +
+  labs(
+    title = paste("MARS Predictions (Expanding Window, 14-Day Horizon)\nModel:", best_id),
+    y = "Price", x = "Date"
+  ) +
+  theme_minimal()
+```
+
