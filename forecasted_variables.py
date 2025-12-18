@@ -90,6 +90,3 @@ dk1_daily.to_csv("dk1_daily_forecast.csv", index=False)
 print(dk1_daily.head())
 
 
-
-
-
