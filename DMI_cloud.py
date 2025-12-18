@@ -1,12 +1,18 @@
 from dmi_open_data import DMIOpenDataClient
 from datetime import datetime
 import pandas as pd
+import os
 
 # Load DK1 station list
 df_stations = pd.read_csv("dk1_stations_final.csv", dtype={"stationId": str})
 
 # Initialize DMI API
-KEY = "6a73aa34-dc49-49d7-af91-5b8d487edf9f"
+KEY = os.getenv("DMI_API_KEY")
+if KEY is None:
+    raise RuntimeError(
+        "DMI_API_KEY environment variable not set. "
+        "Please set it before running this script."
+    )
 client = DMIOpenDataClient(api_key=KEY)
 
 # Map cloud cover codes to estimated % coverage
