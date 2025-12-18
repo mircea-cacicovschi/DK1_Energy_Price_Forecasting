@@ -1,10 +1,18 @@
+import os 
 import pandas as pd
 import matplotlib.pyplot as plt
 from dmi_open_data import DMIOpenDataClient
 from adjustText import adjust_text
 
-# Initialize DMI client with your API key
-client = DMIOpenDataClient(api_key="6a73aa34-dc49-49d7-af91-5b8d487edf9f")
+# Initialize DMI client using environment variable
+KEY = os.getenv("DMI_API_KEY")
+if KEY is None:
+    raise RuntimeError(
+        "DMI_API_KEY environment variable not set. "
+        "Please set it before running this script."
+    )
+
+client = DMIOpenDataClient(api_key=KEY)
 
 # Get all stations
 stations = client.get_stations()
@@ -29,42 +37,42 @@ df_dk_stations = df_stations[
 # Tag region based on longitude
 df_dk_stations["region"] = df_dk_stations["longitude"].apply(lambda x: "DK1" if x < 11 else "DK2")
 
-# # Separate DK1 and DK2 (optional coloring)
-# colors = df_dk_stations["region"].map({"DK1": "blue", "DK2": "red"})
+# Separate DK1 and DK2 (optional coloring)
+colors = df_dk_stations["region"].map({"DK1": "blue", "DK2": "red"})
 
-# # Create plot
-# fig, ax = plt.subplots(figsize=(12, 14))
-# ax.scatter(df_dk_stations["longitude"], df_dk_stations["latitude"], c=colors, s=40, alpha=0.7)
+# Create plot
+fig, ax = plt.subplots(figsize=(12, 14))
+ax.scatter(df_dk_stations["longitude"], df_dk_stations["latitude"], c=colors, s=40, alpha=0.7)
 
-# # Add adjusted station name labels
-# texts = []
-# for _, row in df_dk_stations.iterrows():
-#     texts.append(
-#         ax.text(
-#             row["longitude"],
-#             row["latitude"],
-#             row["name"],
-#             fontsize=6,
-#             alpha=0.85
-#         )
-#     )
+# Add adjusted station name labels
+texts = []
+for _, row in df_dk_stations.iterrows():
+    texts.append(
+        ax.text(
+            row["longitude"],
+            row["latitude"],
+            row["name"],
+            fontsize=6,
+            alpha=0.85
+        )
+    )
 
-# adjust_text(
-#     texts,
-#     arrowprops=dict(arrowstyle="-", color='gray', lw=0.4)
-# )
+adjust_text(
+    texts,
+    arrowprops=dict(arrowstyle="-", color='gray', lw=0.4)
+)
 
-# # Add vertical divider for DK1/DK2
-# ax.axvline(x=12.1, color='gray', linestyle='--', label='Approx DK1/DK2 Boundary (12.1°E)')
+# Add vertical divider for DK1/DK2
+ax.axvline(x=12.1, color='gray', linestyle='--', label='Approx DK1/DK2 Boundary (12.1°E)')
 
-# # Final plot settings
-# ax.set_title("Active SYNOP Weather Stations in Denmark (Adjusted Labels)", fontsize=14)
-# ax.set_xlabel("Longitude")
-# ax.set_ylabel("Latitude")
-# ax.legend()
-# plt.grid(True)
-# plt.tight_layout()
-# plt.show()
+# Final plot settings
+ax.set_title("Active SYNOP Weather Stations in Denmark (Adjusted Labels)", fontsize=14)
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude")
+ax.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
 
 
 exclude_stations = ["Harald B", "Gorm C"]
